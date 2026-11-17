@@ -1,9 +1,9 @@
-//! Dominio BIM (G0): vuoto per ora.
+//! Dominio BIM (G0): unità, identificatori ed espressioni dimensionali.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod expr;
+pub mod ids;
+pub mod units;
+
+pub use expr::*;
+pub use ids::*;
+pub use units::*;
