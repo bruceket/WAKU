@@ -12,28 +12,63 @@ pub enum PipeState {
     Stopped(String),
 }
 
+/// Una "generazione" del server: ogni writer (progetto) ha policy, stato e
+/// segnale di arresto propri. Un task vecchio non puo' toccare la generazione nuova.
+pub struct Generation {
+    pub policy: Arc<Policy>,
+    state: Arc<Mutex<PipeState>>,
+    shutdown: CancellationToken,
+}
+
+impl Generation {
+    fn new(initial: PipeState) -> Self {
+        Self {
+            policy: Arc::new(Policy::new()),
+            state: Arc::new(Mutex::new(initial)),
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    fn set_state(&self, s: PipeState) {
+        set(&self.state, s);
+    }
+
+    pub fn state(&self) -> PipeState {
+        self.state
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| PipeState::Stopped("stato non leggibile".to_owned()))
+    }
+}
+
+fn set(state: &Mutex<PipeState>, s: PipeState) {
+    if let Ok(mut g) = state.lock() {
+        *g = s;
+    }
+}
+
 pub struct AiBridge {
     runtime: Option<tokio::runtime::Runtime>,
-    policy: Arc<Policy>,
     token: Option<Token>,
     token_path: Option<PathBuf>,
     pipe: Option<String>,
-    shutdown: CancellationToken,
-    state: Arc<Mutex<PipeState>>,
+    current: Generation,
 }
 
 impl AiBridge {
-    /// Genera il token, scrive il file token e avvia il server sulla pipe utente.
-    pub fn start(handle: WriterHandle) -> Self {
-        let mut b = Self {
+    fn inert() -> Self {
+        Self {
             runtime: None,
-            policy: Arc::new(Policy::new()),
             token: None,
             token_path: None,
             pipe: None,
-            shutdown: CancellationToken::new(),
-            state: Arc::new(Mutex::new(PipeState::Stopped("non avviato".to_owned()))),
-        };
+            current: Generation::new(PipeState::Stopped("non avviato".to_owned())),
+        }
+    }
+
+    /// Genera il token, scrive il file token e avvia il server sulla pipe utente.
+    pub fn start(handle: WriterHandle) -> Self {
+        let mut b = Self::inert();
         let setup = (|| -> Result<(), String> {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
@@ -54,55 +89,52 @@ impl AiBridge {
         })();
         match setup {
             Ok(()) => b.serve(handle),
-            Err(e) => b.set_state(PipeState::Stopped(e)),
+            Err(e) => b.current.set_state(PipeState::Stopped(e)),
         }
         b
     }
 
-    fn set_state(&self, s: PipeState) {
-        if let Ok(mut g) = self.state.lock() {
-            *g = s;
-        }
+    /// Chiude la generazione corrente (accept e connessioni aperte) e ne crea una
+    /// nuova con policy negata.
+    fn next_generation(&mut self) {
+        self.current.shutdown.cancel();
+        self.current.policy.revoke();
+        self.current = Generation::new(PipeState::Stopped("non avviato".to_owned()));
     }
 
     fn serve(&mut self, handle: WriterHandle) {
         let (Some(rt), Some(token), Some(pipe)) = (&self.runtime, &self.token, &self.pipe) else {
             return;
         };
-        self.shutdown = CancellationToken::new();
-        let (policy, token, pipe) = (Arc::clone(&self.policy), token.clone(), pipe.clone());
-        let (shutdown, state) = (self.shutdown.clone(), Arc::clone(&self.state));
-        self.set_state(PipeState::Active);
+        let g = &self.current;
+        let (policy, token, pipe) = (Arc::clone(&g.policy), token.clone(), pipe.clone());
+        let (shutdown, state) = (g.shutdown.clone(), Arc::clone(&g.state));
+        g.set_state(PipeState::Active);
         rt.spawn(async move {
             let r = mcp::serve_on(&pipe, handle, policy, token, shutdown).await;
             let msg = match r {
                 Ok(()) => "arrestato".to_owned(),
                 Err(e) => e.to_string(),
             };
-            if let Ok(mut g) = state.lock() {
-                *g = PipeState::Stopped(msg);
-            }
+            set(&state, PipeState::Stopped(msg));
         });
     }
 
-    /// Nuovo writer (nuovo progetto / apertura): riavvia il server sullo stesso nome pipe.
-    /// La scrittura AI torna negata.
+    /// Nuovo writer (nuovo progetto / apertura): nuova generazione sullo stesso
+    /// nome pipe. La scrittura AI torna negata.
     pub fn restart(&mut self, handle: WriterHandle) {
-        self.shutdown.cancel();
-        self.policy.revoke();
+        self.next_generation();
         self.serve(handle);
     }
 
     pub fn state(&self) -> PipeState {
-        self.state
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| PipeState::Stopped("stato non leggibile".to_owned()))
+        self.current.state()
     }
 
     /// Arresta il server, attende il runtime e rimuove il file token.
     pub fn shutdown(&mut self) {
-        self.shutdown.cancel();
+        self.current.shutdown.cancel();
+        self.current.policy.revoke();
         if let Some(rt) = self.runtime.take() {
             rt.shutdown_timeout(std::time::Duration::from_secs(2));
         }
@@ -126,7 +158,7 @@ impl AiBridge {
             };
             ui.end_row();
             ui.label("Scrittura AI:");
-            ui.label(if self.policy.allows_write() {
+            ui.label(if self.current.policy.allows_write() {
                 "concessa per questa sessione"
             } else {
                 "negata (sola lettura)"
@@ -134,7 +166,7 @@ impl AiBridge {
             ui.end_row();
         });
         ui.horizontal(|ui| {
-            let granted = self.policy.allows_write();
+            let granted = self.current.policy.allows_write();
             if ui
                 .add_enabled(
                     !granted,
@@ -142,13 +174,13 @@ impl AiBridge {
                 )
                 .clicked()
             {
-                self.policy.grant();
+                self.current.policy.grant();
             }
             if ui
                 .add_enabled(granted, egui::Button::new("Revoca"))
                 .clicked()
             {
-                self.policy.revoke();
+                self.current.policy.revoke();
             }
         });
         ui.separator();
@@ -186,5 +218,31 @@ pub fn origin_label(o: Origin) -> &'static str {
 impl Drop for AiBridge {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_yields_fresh_revoked_policy() {
+        let mut b = AiBridge::inert();
+        b.current.set_state(PipeState::Active);
+        b.current.policy.grant();
+        let (old_policy, old_state) = (Arc::clone(&b.current.policy), Arc::clone(&b.current.state));
+        let old_stop = b.current.shutdown.clone();
+        b.next_generation();
+        assert!(old_stop.is_cancelled());
+        assert!(!old_policy.allows_write());
+        assert!(!Arc::ptr_eq(&old_policy, &b.current.policy));
+        assert!(!b.current.policy.allows_write());
+        // Concedere sulla nuova generazione non riabilita la vecchia.
+        b.current.policy.grant();
+        assert!(!old_policy.allows_write());
+        // Il task vecchio che termina non sovrascrive lo stato nuovo.
+        b.current.set_state(PipeState::Active);
+        set(&old_state, PipeState::Stopped("arrestato".to_owned()));
+        assert_eq!(b.state(), PipeState::Active);
     }
 }

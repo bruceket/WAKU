@@ -23,6 +23,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Waku",
         options,
-        Box::new(|cc| Ok(Box::new(gui::WakuApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(gui::WakuApp::new(cc)?))),
     )
 }

@@ -63,16 +63,14 @@ pub struct WakuApp {
     show_ai: bool,
 }
 
-fn new_writer(model: Model) -> (WriterHandle, Controller<WriterHandle>) {
+fn new_writer(model: Model) -> Result<(WriterHandle, Controller<WriterHandle>), String> {
     let handle = spawn_writer(CommandService::new(model));
-    // Il writer e' appena stato avviato nello stesso processo: la prima
-    // lettura dello snapshot non puo' fallire salvo panic del thread.
-    let ctl = Controller::new(handle.clone()).expect("writer appena avviato");
-    (handle, ctl)
+    let ctl = Controller::new(handle.clone()).map_err(|e| format!("avvio del modello: {e}"))?;
+    Ok((handle, ctl))
 }
 
 impl WakuApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
         theme::apply(&cc.egui_ctx);
         let wgpu = cc.wgpu_render_state.clone();
         if let Some(rs) = &wgpu {
@@ -83,10 +81,10 @@ impl WakuApp {
             );
             rs.renderer.write().callback_resources.insert(scene);
         }
-        let (handle, ctl) = new_writer(Model::new("Nuovo progetto", LengthUnit::Mm));
+        let (handle, ctl) = new_writer(Model::new("Nuovo progetto", LengthUnit::Mm))?;
         let bridge = AiBridge::start(handle);
         let (io_tx, io_rx) = channel();
-        Self {
+        Ok(Self {
             ctl,
             bridge,
             wgpu,
@@ -104,7 +102,7 @@ impl WakuApp {
             io_busy: 0,
             dialog: None,
             show_ai: true,
-        }
+        })
     }
 
     fn unit(&self) -> LengthUnit {
@@ -115,13 +113,22 @@ impl WakuApp {
         self.ctl.snapshot().model.levels.keys().next().copied()
     }
 
-    fn replace_model(&mut self, model: Model) {
-        let (handle, ctl) = new_writer(model);
+    /// Sostituisce il modello con un nuovo writer; in caso di errore il modello
+    /// corrente resta attivo e l'errore va in barra di stato.
+    fn replace_model(&mut self, model: Model) -> bool {
+        let (handle, ctl) = match new_writer(model) {
+            Ok(w) => w,
+            Err(e) => {
+                self.ctl.set_status(e, true);
+                return false;
+            }
+        };
         self.ctl = ctl;
         self.bridge.restart(handle);
         self.view3d.reset();
         self.selected = None;
         self.wall.cancel();
+        true
     }
 
     // ---- I/O su thread worker ----
@@ -191,7 +198,10 @@ impl WakuApp {
             match r {
                 IoResult::Opened(path, Ok(opened)) => {
                     let (model, lock) = *opened;
-                    self.replace_model(model);
+                    if !self.replace_model(model) {
+                        // `lock` del file non aperto viene rilasciato qui.
+                        continue;
+                    }
                     // Il lock precedente viene rilasciato qui.
                     self.lock = Some(lock);
                     self.ctl
@@ -286,6 +296,10 @@ impl WakuApp {
         if pressed(&SC_SAVE) {
             self.request_save(ctx);
         }
+        if typing {
+            // Ctrl+Z/Y/R/E/I e tasti singoli restano al campo di testo attivo.
+            return;
+        }
         if pressed(&SC_EXPORT) {
             self.dialog = Some(Dialog::Export("modello.ifc".to_owned()));
         }
@@ -294,10 +308,6 @@ impl WakuApp {
         }
         if pressed(&SC_AI) {
             self.show_ai = !self.show_ai;
-        }
-        if typing {
-            // Ctrl+Z/Y e tasti singoli restano al campo di testo attivo.
-            return;
         }
         if pressed(&SC_UNDO) {
             self.ctl.undo();
@@ -520,10 +530,11 @@ impl WakuApp {
                     });
                     if ui.button("CREA").clicked() {
                         let unit = *unit;
-                        self.replace_model(Model::new("Nuovo progetto", unit));
-                        self.lock = None;
-                        self.path = None;
-                        self.ctl.set_status("Nuovo progetto", false);
+                        if self.replace_model(Model::new("Nuovo progetto", unit)) {
+                            self.lock = None;
+                            self.path = None;
+                            self.ctl.set_status("Nuovo progetto", false);
+                        }
                         done = true;
                     }
                 }

@@ -1,7 +1,8 @@
 //! Logica testabile dell'app desktop (indipendente da egui).
 
 use commands::{
-    Action, Command, JournalEntry, Origin, Request, RequestId, Response, Snapshot, WriterHandle,
+    Action, Command, JournalEntry, Origin, Request, RequestId, Response, Revision, Snapshot,
+    WriterHandle,
 };
 use domain::{ElementId, Length, LengthUnit, parse_length};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -59,6 +60,8 @@ pub struct Controller<S: CommandSink> {
     journal_rx: Option<Receiver<Response>>,
     journal: Vec<JournalEntry>,
     status: Option<StatusMsg>,
+    /// Revisione attesa per la prossima richiesta: max(snapshot, ultimo esito).
+    expected: Revision,
     seq: u64,
 }
 
@@ -70,6 +73,7 @@ impl<S: CommandSink> Controller<S> {
             Ok(Response::Snapshot(s)) => s,
             _ => return Err("writer non disponibile".to_owned()),
         };
+        let expected = snapshot.revision;
         let journal_rx = Some(sink.send(Request::Journal));
         Ok(Self {
             sink,
@@ -79,6 +83,7 @@ impl<S: CommandSink> Controller<S> {
             journal_rx,
             journal: Vec::new(),
             status: None,
+            expected,
             seq: 0,
         })
     }
@@ -107,7 +112,7 @@ impl<S: CommandSink> Controller<S> {
         self.seq += 1;
         let cmd = Command {
             request_id: RequestId(format!("gui-{}-{}", std::process::id(), self.seq)),
-            expected: self.snapshot.revision,
+            expected: self.expected,
             origin: Origin::Gui,
             actions,
             preview: false,
@@ -151,7 +156,7 @@ impl<S: CommandSink> Controller<S> {
 
     pub fn undo(&mut self) {
         let req = Request::Undo {
-            expected: self.snapshot.revision,
+            expected: self.expected,
             origin: Origin::Gui,
         };
         self.pending.push(self.sink.send(req));
@@ -159,7 +164,7 @@ impl<S: CommandSink> Controller<S> {
 
     pub fn redo(&mut self) {
         let req = Request::Redo {
-            expected: self.snapshot.revision,
+            expected: self.expected,
             origin: Origin::Gui,
         };
         self.pending.push(self.sink.send(req));
@@ -171,6 +176,7 @@ impl<S: CommandSink> Controller<S> {
         while let Ok(s) = self.updates.try_recv() {
             if s.revision > self.snapshot.revision {
                 self.snapshot = s;
+                self.expected = self.expected.max(self.snapshot.revision);
                 changed = true;
             }
         }
@@ -178,6 +184,9 @@ impl<S: CommandSink> Controller<S> {
         for rx in self.pending.drain(..) {
             match rx.try_recv() {
                 Ok(Response::Done(Ok(o))) => {
+                    if !o.preview {
+                        self.expected = self.expected.max(o.revision);
+                    }
                     self.status = Some(StatusMsg {
                         text: format!("Revisione {}", o.revision.0),
                         error: false,
@@ -367,6 +376,22 @@ mod tests {
         // Il modello non e' mai toccato direttamente dalla GUI.
         assert_eq!(c.snapshot().model.walls.len(), m.walls.len());
         assert_eq!(c.snapshot().revision, Revision(7));
+    }
+
+    #[test]
+    fn undo_right_after_commit_uses_new_revision() {
+        let (_, ids) = sample_room();
+        let (sink, log) = fake(None);
+        let mut c = Controller::new(sink).unwrap();
+        c.create_wall(ids.level, [0.0, 0.0], [1000.0, 0.0], 100.0, 2700.0);
+        // L'esito (rev. 8) arriva prima dello snapshot dalla sottoscrizione.
+        c.poll();
+        c.undo();
+        let log = log.borrow();
+        match log.last().unwrap() {
+            Request::Undo { expected, .. } => assert_eq!(*expected, Revision(8)),
+            other => panic!("richiesta inattesa: {other:?}"),
+        }
     }
 
     #[test]

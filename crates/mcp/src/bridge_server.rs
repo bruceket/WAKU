@@ -283,8 +283,14 @@ pub async fn serve_with(
         match slots.clone().try_acquire_owned() {
             Ok(permit) => {
                 let (h, p, t) = (handle.clone(), policy.clone(), token.clone());
+                let stop = shutdown.clone();
                 tokio::spawn(async move {
-                    let _ = handle_conn(conn, cfg, h, p, t).await;
+                    // Lo shutdown chiude anche le connessioni gia' aperte: il
+                    // future (e la pipe) viene rilasciato.
+                    tokio::select! {
+                        _ = stop.cancelled() => {}
+                        _ = handle_conn(conn, cfg, h, p, t) => {}
+                    }
                     drop(permit);
                 });
             }
@@ -545,6 +551,23 @@ mod tests {
     fn code(v: &Value) -> &str {
         assert_eq!(v["type"], "Err", "{v}");
         v["body"]["code"].as_str().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn existing_connection_closed_on_shutdown() {
+        let fx = start("shutconn");
+        let mut c = hello(&fx).await;
+        assert!(call(&mut c, json!({"type":"Summary"})).await.is_some());
+        fx.stop.cancel();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        fx.policy.grant();
+        let r = tokio::time::timeout(
+            Duration::from_secs(5),
+            call(&mut c, wall(&fx, "x", 0, false)),
+        )
+        .await
+        .expect("la connessione deve chiudersi, non restare appesa");
+        assert!(r.is_none(), "richiesta servita dopo lo shutdown: {r:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
