@@ -86,6 +86,21 @@ impl Model {
         id
     }
 
+    /// Riallinea il contatore degli identificatori dopo una deserializzazione:
+    /// `next_id` diventa almeno `max(id presenti) + 1`, evitando collisioni.
+    pub fn normalize_ids(&mut self) {
+        let max = self
+            .levels
+            .keys()
+            .chain(self.walls.keys())
+            .chain(self.openings.keys())
+            .chain(self.spaces.keys())
+            .map(|id| id.get())
+            .max()
+            .unwrap_or(0);
+        self.next_id = self.next_id.max(max.saturating_add(1)).max(1);
+    }
+
     /// Verifica le invarianti del modello.
     pub fn validate(&self) -> Result<(), ModelError> {
         for (&id, l) in &self.levels {
@@ -260,6 +275,17 @@ mod tests {
         let b = m.alloc_id();
         assert_ne!(a, b);
         assert!(!m.levels.contains_key(&a));
+    }
+
+    #[test]
+    fn normalize_ids_clamps_counter() {
+        let (m, ids) = sample_room();
+        let mut j: serde_json::Value = serde_json::to_value(&m).unwrap();
+        j["next_id"] = 0.into();
+        let mut m2: Model = serde_json::from_value(j).unwrap();
+        m2.normalize_ids();
+        let n = m2.alloc_id();
+        assert!(n > ids.door && n > ids.walls[3]);
     }
 
     #[test]
