@@ -3,7 +3,9 @@
 pub mod command;
 pub mod journal;
 pub mod service;
+pub mod summary;
 
 pub use command::*;
 pub use journal::*;
 pub use service::*;
+pub use summary::model_summary;
