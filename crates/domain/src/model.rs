@@ -35,6 +35,8 @@ pub enum ModelError {
     DanglingHost(ElementId),
     #[error("elemento {0:?} con livello inesistente")]
     DanglingLevel(ElementId),
+    #[error("valore non finito nell'elemento {id:?}")]
+    NonFinite { id: ElementId },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -90,6 +92,17 @@ impl Model {
             positive(id, "height", l.height)?;
         }
         for (&id, w) in &self.walls {
+            let fin = [
+                w.start.x,
+                w.start.y,
+                w.end.x,
+                w.end.y,
+                w.thickness.as_mm(),
+                w.height.as_mm(),
+            ];
+            if fin.iter().any(|v| !v.is_finite()) {
+                return Err(ModelError::NonFinite { id });
+            }
             if !self.levels.contains_key(&w.level) {
                 return Err(ModelError::DanglingLevel(id));
             }
@@ -100,6 +113,15 @@ impl Model {
             positive(id, "height", w.height)?;
         }
         for (&id, o) in &self.openings {
+            let fin = [
+                o.offset.as_mm(),
+                o.width.as_mm(),
+                o.height.as_mm(),
+                o.sill.as_mm(),
+            ];
+            if fin.iter().any(|v| !v.is_finite()) {
+                return Err(ModelError::NonFinite { id });
+            }
             let wall = self
                 .walls
                 .get(&o.host)
@@ -210,6 +232,25 @@ mod tests {
         let (mut m, ids) = sample_room();
         m.levels.remove(&ids.level);
         assert!(matches!(m.validate(), Err(ModelError::DanglingLevel(_))));
+    }
+
+    #[test]
+    fn nan_wall_rejected() {
+        let (mut m, ids) = sample_room();
+        m.walls.get_mut(&ids.walls[0]).unwrap().end = Point2::new(f64::NAN, 0.0);
+        assert_eq!(
+            m.validate(),
+            Err(ModelError::NonFinite { id: ids.walls[0] })
+        );
+        let (mut m, ids) = sample_room();
+        m.walls.get_mut(&ids.walls[1]).unwrap().height = Length::mm(f64::INFINITY);
+        assert_eq!(
+            m.validate(),
+            Err(ModelError::NonFinite { id: ids.walls[1] })
+        );
+        let (mut m, ids) = sample_room();
+        m.openings.get_mut(&ids.door).unwrap().offset = Length::mm(f64::NAN);
+        assert_eq!(m.validate(), Err(ModelError::NonFinite { id: ids.door }));
     }
 
     #[test]
