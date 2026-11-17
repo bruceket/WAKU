@@ -180,12 +180,14 @@ impl WakuApp {
         let model = Arc::clone(&self.ctl.snapshot().model);
         self.spawn_io(ctx, move || {
             let res = (|| {
-                use std::io::Write;
-                let f = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-                let mut w = std::io::BufWriter::new(f);
-                let rep = ifc::export_ifc4(&model, &mut w).map_err(|e| e.to_string())?;
-                w.flush().map_err(|e| e.to_string())?;
-                Ok(rep.skipped.len())
+                let mut skipped = 0;
+                persistence::write_atomic_with(&path, |mut w| {
+                    let rep = ifc::export_ifc4(&model, &mut w).map_err(std::io::Error::other)?;
+                    skipped = rep.skipped.len();
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+                Ok(skipped)
             })();
             IoResult::Exported(path, res)
         });

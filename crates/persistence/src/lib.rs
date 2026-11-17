@@ -4,6 +4,7 @@ mod atomic;
 mod lock;
 mod manifest;
 
+pub use atomic::write_atomic_with;
 pub use lock::ProjectLock;
 pub use manifest::Manifest;
 

@@ -10,8 +10,6 @@ use commands::{
 use domain::{LengthUnit, Model};
 use ifc::{ExportOptions, export_ifc4_with};
 use persistence::{PersistError, ProjectLock};
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -142,9 +140,13 @@ fn run(cli: Cli) -> Result<(), Fail> {
             if let Some(n) = out.file_name() {
                 opts.file_name = n.to_string_lossy().into_owned();
             }
-            let mut w = BufWriter::new(File::create(&out).map_err(io)?);
-            let rep = export_ifc4_with(&model, &mut w, &opts).map_err(io)?;
-            for (id, why) in &rep.skipped {
+            let mut skipped = Vec::new();
+            persistence::write_atomic_with(&out, |mut w| {
+                let rep = export_ifc4_with(&model, &mut w, &opts).map_err(std::io::Error::other)?;
+                skipped = rep.skipped;
+                Ok(())
+            })?;
+            for (id, why) in &skipped {
                 eprintln!("saltato elemento {}: {why}", id.get());
             }
             Ok(())
