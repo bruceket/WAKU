@@ -18,7 +18,6 @@ use std::time::Duration;
 
 const DOOR_WIDTH_MM: f64 = 800.0;
 const DOOR_HEIGHT_MM: f64 = 2100.0;
-const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(0xDC, 0x26, 0x26);
 
 const SC_NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const SC_OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
@@ -472,13 +471,13 @@ impl WakuApp {
         ui.horizontal(|ui| {
             match self.ctl.status() {
                 Some(s) if s.error => {
-                    ui.colored_label(ERROR_COLOR, &s.text);
+                    ui.colored_label(theme::status_colors(ui.visuals().dark_mode).error, &s.text);
                 }
                 Some(s) => {
                     ui.label(&s.text);
                 }
                 None => {
-                    ui.label("Pronto");
+                    ui.colored_label(theme::status_colors(ui.visuals().dark_mode).ok, "Pronto");
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

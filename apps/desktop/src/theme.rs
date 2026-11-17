@@ -60,7 +60,7 @@ impl Palette {
                 grid: Color32::from_rgb(0x30, 0x29, 0x24),
                 wall: Color32::from_rgb(0x8A, 0x7E, 0x74),
                 text: TEXT_DARK,
-                accent: PRIMARY_DARK,
+                accent: active_fill(true),
                 space: Color32::from_rgb(0xB8, 0xAC, 0xA0),
             }
         } else {
@@ -69,41 +69,82 @@ impl Palette {
                 grid: Color32::from_rgb(0xEA, 0xE4, 0xDB),
                 wall: Color32::from_rgb(0x9A, 0x8E, 0x84),
                 text: TEXT_LIGHT,
-                accent: PRIMARY,
+                accent: active_fill(false),
                 space: Color32::from_rgb(0x6B, 0x5E, 0x54),
             }
         }
     }
 }
 
+/// Colori di stato per un tema: distinti dal primario, >= 4,5:1 sullo sfondo.
+pub struct StatusColors {
+    pub error: Color32,
+    pub warning: Color32,
+    pub ok: Color32,
+}
+
+pub fn status_colors(dark: bool) -> StatusColors {
+    if dark {
+        StatusColors {
+            error: Color32::from_rgb(0xFB, 0x71, 0x85),
+            warning: Color32::from_rgb(0xFB, 0xBF, 0x24),
+            ok: Color32::from_rgb(0x4A, 0xDE, 0x80),
+        }
+    } else {
+        StatusColors {
+            error: Color32::from_rgb(0xBE, 0x12, 0x3C),
+            warning: Color32::from_rgb(0x7C, 0x5E, 0x00),
+            ok: Color32::from_rgb(0x15, 0x80, 0x3D),
+        }
+    }
+}
+
+/// Riempimento di stati attivi, selezione e strumento corrente (token unico).
+pub fn active_fill(dark: bool) -> Color32 {
+    if dark { PRIMARY_DARK } else { PRIMARY_STRONG }
+}
+
+/// Visuals egui con la palette ufficiale. Nessun `override_text_color`: in egui
+/// 0.37 vincerebbe su `fg_stroke` degli stati attivi e su `selection.stroke`.
+pub fn visuals(dark: bool) -> egui::Visuals {
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    let (bg, text) = if dark {
+        (BG_DARK, TEXT_DARK)
+    } else {
+        (BG_LIGHT, TEXT_LIGHT)
+    };
+    let fill = active_fill(dark);
+    // etichetta sul riempimento attivo: #FAF7F2 su #B95331, #1C1714 su #E0754D
+    let on_fill = if dark { BG_DARK } else { BG_LIGHT };
+    let status = status_colors(dark);
+    v.panel_fill = bg;
+    v.window_fill = bg;
+    v.override_text_color = None;
+    v.widgets.noninteractive.fg_stroke.color = text;
+    v.widgets.inactive.fg_stroke.color = text;
+    v.widgets.hovered.fg_stroke.color = text;
+    v.widgets.open.fg_stroke.color = text;
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, fill);
+    v.widgets.active.bg_fill = fill;
+    v.widgets.active.weak_bg_fill = fill;
+    v.widgets.active.bg_stroke = Stroke::new(1.0, fill);
+    v.widgets.active.fg_stroke = Stroke::new(1.5, on_fill);
+    v.selection.bg_fill = fill;
+    v.selection.stroke = Stroke::new(1.0, on_fill);
+    v.hyperlink_color = fill;
+    v.error_fg_color = status.error;
+    v.warn_fg_color = status.warning;
+    v
+}
+
 /// Applica la palette ufficiale ai due temi egui.
 pub fn apply(ctx: &egui::Context) {
     for (theme, dark) in [(egui::Theme::Light, false), (egui::Theme::Dark, true)] {
-        ctx.style_mut_of(theme, |s| {
-            let v = &mut s.visuals;
-            let (bg, text, fill, on_fill, link) = if dark {
-                (BG_DARK, TEXT_DARK, PRIMARY_DARK, BG_DARK, PRIMARY_DARK)
-            } else {
-                (
-                    BG_LIGHT,
-                    TEXT_LIGHT,
-                    PRIMARY_STRONG,
-                    BG_LIGHT,
-                    PRIMARY_STRONG,
-                )
-            };
-            v.panel_fill = bg;
-            v.window_fill = bg;
-            v.override_text_color = Some(text);
-            v.selection.bg_fill = fill;
-            v.selection.stroke = Stroke::new(1.0, on_fill);
-            v.hyperlink_color = link;
-            v.widgets.hovered.bg_stroke = Stroke::new(1.0, fill);
-            v.widgets.active.bg_fill = fill;
-            v.widgets.active.weak_bg_fill = fill;
-            v.widgets.active.bg_stroke = Stroke::new(1.0, fill);
-            v.widgets.active.fg_stroke = Stroke::new(1.5, on_fill);
-        });
+        ctx.style_mut_of(theme, |s| s.visuals = visuals(dark));
     }
 }
 
@@ -315,6 +356,70 @@ mod tests {
 
     fn rgb(c: Color32) -> [u8; 3] {
         [c.r(), c.g(), c.b()]
+    }
+
+    fn hue(c: Color32) -> f32 {
+        let (r, g, b) = (f32::from(c.r()), f32::from(c.g()), f32::from(c.b()));
+        let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+        let d = mx - mn;
+        if d == 0.0 {
+            0.0
+        } else if mx == r {
+            60.0 * ((g - b) / d).rem_euclid(6.0)
+        } else if mx == g {
+            60.0 * ((b - r) / d + 2.0)
+        } else {
+            60.0 * ((r - g) / d + 4.0)
+        }
+    }
+
+    #[test]
+    fn visuals_rendered_pairs_aa() {
+        for dark in [false, true] {
+            let v = visuals(dark);
+            assert!(v.override_text_color.is_none());
+            let a = &v.widgets.active;
+            let w = &v.widgets;
+            let pairs = [
+                ("attivo/bg", a.fg_stroke.color, a.bg_fill),
+                ("attivo/weak", a.fg_stroke.color, a.weak_bg_fill),
+                ("selezione", v.selection.stroke.color, v.selection.bg_fill),
+                (
+                    "testo/pannello",
+                    w.noninteractive.fg_stroke.color,
+                    v.panel_fill,
+                ),
+                (
+                    "inattivo",
+                    w.inactive.fg_stroke.color,
+                    w.inactive.weak_bg_fill,
+                ),
+                ("hover", w.hovered.fg_stroke.color, w.hovered.weak_bg_fill),
+                ("link", v.hyperlink_color, v.panel_fill),
+            ];
+            for (name, fg, bg) in pairs {
+                let r = contrast_ratio(rgb(fg), rgb(bg));
+                println!("dark={dark} {name}: {r:.2}");
+                assert!(r >= 4.5, "dark={dark} {name}: {r:.2}");
+            }
+        }
+    }
+
+    #[test]
+    fn status_colors_aa_and_distinct() {
+        for dark in [false, true] {
+            let bg = if dark { BG_DARK } else { BG_LIGHT };
+            let s = status_colors(dark);
+            let primary = active_fill(dark);
+            for (name, c) in [("errore", s.error), ("avviso", s.warning), ("ok", s.ok)] {
+                let r = contrast_ratio(rgb(c), rgb(bg));
+                let dh = (hue(c) - hue(primary)).abs();
+                let dh = dh.min(360.0 - dh);
+                println!("dark={dark} {name}: {r:.2}, delta tinta {dh:.0}");
+                assert!(r >= 4.5, "dark={dark} {name}: {r:.2}");
+                assert!(dh >= 20.0, "dark={dark} {name}: tinta vicina ({dh:.0})");
+            }
+        }
     }
 
     #[test]
