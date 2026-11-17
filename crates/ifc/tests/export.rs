@@ -196,3 +196,93 @@ fn parses_as_step() {
         assert!(ids.contains(r), "riferimento pendente #{r}");
     }
 }
+
+#[test]
+fn derived_guids_stable_across_edits() {
+    let m = sample();
+    let before = export(&m);
+    let mut m2 = m.clone();
+    // Muro extra e porta extra con ElementId minimo: precedono nell'ordine di
+    // scrittura tutti gli elementi esistenti.
+    let template = m2.walls.values().next().unwrap().clone();
+    let wid = m2.alloc_id();
+    m2.walls.insert(
+        wid,
+        domain::Wall {
+            guid: IfcGuid::from_u128(0xBEEF),
+            start: domain::Point2::new(10_000.0, 0.0),
+            end: domain::Point2::new(12_000.0, 0.0),
+            ..template
+        },
+    );
+    let door = m2.openings.values().next().unwrap().clone();
+    m2.openings.insert(
+        domain::ElementId::new(0),
+        domain::Opening {
+            guid: IfcGuid::from_u128(0xCAFE),
+            host: wid,
+            ..door
+        },
+    );
+    let after = export(&m2);
+    assert_ne!(before, after);
+    // Ogni GUID del primo export (anche derivati) resta nel secondo.
+    let guids = |s: &str| -> HashSet<String> {
+        s.lines()
+            .filter_map(|l| l.split_once("('"))
+            .filter_map(|(_, rest)| rest.get(..22))
+            .filter(|g| IfcGuid::parse(g).is_ok())
+            .map(str::to_owned)
+            .collect()
+    };
+    let (a, b) = (guids(&before), guids(&after));
+    assert_eq!(a.len(), 18);
+    let missing: Vec<_> = a.difference(&b).collect();
+    assert!(missing.is_empty(), "GUID cambiati: {missing:?}");
+    // Catena della porta originale: fill -> opening -> void, per GUID.
+    let door_guid = m.openings.values().next().unwrap().guid.as_str().to_owned();
+    assert_eq!(
+        door_chain(&before, &door_guid),
+        door_chain(&after, &door_guid)
+    );
+}
+
+/// GUID di (IfcRelFillsElement, IfcOpeningElement, IfcRelVoidsElement) legati
+/// alla porta con il GUID dato.
+fn door_chain(out: &str, door_guid: &str) -> [String; 3] {
+    let id_of = |needle: &str| -> String {
+        let l = out.lines().find(|l| l.contains(needle)).unwrap();
+        l[..l.find('=').unwrap()].to_owned()
+    };
+    let guid = |l: &str| l[l.find("('").unwrap() + 2..][..22].to_owned();
+    let door = id_of(&format!("IFCDOOR('{door_guid}'"));
+    let fill = out
+        .lines()
+        .find(|l| l.contains("=IFCRELFILLSELEMENT(") && l.ends_with(&format!(",{door});")))
+        .unwrap();
+    let opening = fill.rsplit(",#").nth(1).unwrap().to_owned();
+    let opening = format!("#{opening}");
+    let op_line = out
+        .lines()
+        .find(|l| l.starts_with(&format!("{opening}=")))
+        .unwrap();
+    let void = out
+        .lines()
+        .find(|l| l.contains("=IFCRELVOIDSELEMENT(") && l.ends_with(&format!(",{opening});")))
+        .unwrap();
+    [guid(fill), guid(op_line), guid(void)]
+}
+
+#[test]
+fn space_height_is_min_wall_height() {
+    let out = export(&sample());
+    let poly = out
+        .lines()
+        .position(|l| l.contains("=IFCARBITRARYCLOSEDPROFILEDEF("))
+        .unwrap();
+    let solid = out.lines().nth(poly + 1).unwrap();
+    assert!(
+        solid.contains("IFCEXTRUDEDAREASOLID(") && solid.ends_with(",2700.);"),
+        "{solid}"
+    );
+}

@@ -11,7 +11,7 @@
 
 use crate::step::{real, string};
 use domain::{ElementId, IfcGuid, Model, Point2};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use thiserror::Error;
 
@@ -150,17 +150,22 @@ struct Builder {
     lines: Vec<String>,
     /// GUID gia' usati (modello + derivati), per evitare collisioni.
     used: HashSet<String>,
-    seed: u128,
-    counter: u64,
+    /// GUID (non quotato) delle entita' radicate gia' scritte, per `#id`.
+    guids: HashMap<usize, String>,
 }
 
-/// Mescolamento splitmix64 per GUID derivati deterministici.
-fn splitmix(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = x;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
+/// FNV-1a 64 bit con base di offset data (implementazione locale, stabile).
+fn fnv1a(bytes: &[u8], offset: u64) -> u64 {
+    bytes.iter().fold(offset, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3)
+    })
+}
+
+/// Hash deterministico a 128 bit: due FNV-1a 64 con basi diverse.
+fn hash128(key: &str) -> u128 {
+    let hi = fnv1a(key.as_bytes(), 0xCBF2_9CE4_8422_2325);
+    let lo = fnv1a(key.as_bytes(), 0x6C62_272E_07BB_0142);
+    (u128::from(hi) << 64) | u128::from(lo)
 }
 
 impl Builder {
@@ -177,8 +182,7 @@ impl Builder {
         Builder {
             lines: Vec::new(),
             used,
-            seed: p.guid.to_u128(),
-            counter: 0,
+            guids: HashMap::new(),
         }
     }
 
@@ -187,19 +191,41 @@ impl Builder {
         self.lines.len()
     }
 
-    /// GUID deterministico per entita' senza GUID nel dominio (relazioni,
-    /// IfcOpeningElement), derivato dal GUID di progetto.
-    fn derived_guid(&mut self) -> String {
+    /// Registra il GUID di un'entita' radicata appena scritta.
+    fn tag(&mut self, e: usize, guid: &str) -> usize {
+        self.guids.insert(e, guid.to_owned());
+        e
+    }
+
+    /// GUID deterministico e stabile per entita' senza GUID nel dominio:
+    /// hash di (tipo, GUID relating, GUID related ordinati). Non dipende
+    /// dall'ordine di scrittura ne' dal resto del modello; in caso di
+    /// collisione si aggiunge un sale progressivo.
+    fn derived_guid(&mut self, kind: &str, relating: &str, related: &[&str]) -> String {
+        let mut rel: Vec<&str> = related.to_vec();
+        rel.sort_unstable();
+        let key = format!("waku-ifc|{kind}|{relating}|{}", rel.join(","));
+        let mut salt = 0u32;
         loop {
-            self.counter += 1;
-            let hi = splitmix(self.counter.wrapping_mul(2));
-            let lo = splitmix(self.counter.wrapping_mul(2) + 1);
-            let v = self.seed ^ ((u128::from(hi) << 64) | u128::from(lo));
-            let g = IfcGuid::from_u128(v).as_str().to_owned();
+            let k = if salt == 0 {
+                key.clone()
+            } else {
+                format!("{key}#{salt}")
+            };
+            let g = IfcGuid::from_u128(hash128(&k)).as_str().to_owned();
             if self.used.insert(g.clone()) {
                 return string(&g);
             }
+            salt += 1;
         }
+    }
+
+    /// GUID derivato per una relazione tra entita' gia' scritte.
+    fn rel_guid(&mut self, kind: &str, relating: usize, related: &[usize]) -> String {
+        let a = self.guids[&relating].clone();
+        let b: Vec<String> = related.iter().map(|e| self.guids[e].clone()).collect();
+        let b: Vec<&str> = b.iter().map(String::as_str).collect();
+        self.derived_guid(kind, &a, &b)
     }
 
     fn point3(&mut self, x: f64, y: f64, z: f64) -> usize {
@@ -243,8 +269,10 @@ impl Builder {
         self.add(format!("IFCPRODUCTDEFINITIONSHAPE($,$,({}))", r(rep)))
     }
 
+    /// Una sola IfcRelAggregates per oggetto "whole": GUID derivato dal solo
+    /// relating, stabile se si aggiungono o tolgono parti.
     fn rel_aggregates(&mut self, whole: usize, parts: &[usize]) {
-        let g = self.derived_guid();
+        let g = self.rel_guid("IfcRelAggregates", whole, &[]);
         self.add(format!(
             "IFCRELAGGREGATES({g},$,$,$,{},{})",
             r(whole),
@@ -301,18 +329,21 @@ impl Builder {
             r(ctx),
             r(ua)
         ));
+        self.tag(project, p.guid.as_str());
         let site_lp = self.local_placement(None, sh.wcs);
         let site = self.add(format!(
             "IFCSITE({},$,'Sito',$,$,{},$,$,.ELEMENT.,$,$,$,$,$)",
             string(p.site_guid.as_str()),
             r(site_lp)
         ));
+        self.tag(site, p.site_guid.as_str());
         let bld_lp = self.local_placement(Some(site_lp), sh.wcs);
         let building = self.add(format!(
             "IFCBUILDING({},$,'Edificio',$,$,{},$,$,.ELEMENT.,$,$,$)",
             string(p.building_guid.as_str()),
             r(bld_lp)
         ));
+        self.tag(building, p.building_guid.as_str());
 
         // Piani.
         let mut storeys: BTreeMap<ElementId, (usize, usize)> = BTreeMap::new();
@@ -332,6 +363,7 @@ impl Builder {
                 r(lp),
                 real(z)
             ));
+            self.tag(e, l.guid.as_str());
             storeys.insert(id, (e, lp));
         }
         let mut contained: BTreeMap<ElementId, Vec<usize>> = BTreeMap::new();
@@ -381,6 +413,7 @@ impl Builder {
                 r(lp),
                 r(pds)
             ));
+            self.tag(e, w.guid.as_str());
             contained.entry(w.level).or_default().push(e);
             walls.insert(
                 id,
@@ -436,13 +469,14 @@ impl Builder {
                 real(depth)
             ));
             let pds = self.body_shape(&sh, solid);
-            let og = self.derived_guid();
+            let og = self.derived_guid("IfcOpeningElement", o.guid.as_str(), &[]);
             let opening = self.add(format!(
                 "IFCOPENINGELEMENT({og},$,{},$,$,{},{},$,.OPENING.)",
                 string(&format!("Foro {}", id.get())),
                 r(lp),
                 r(pds)
             ));
+            self.tag(opening, &og[1..og.len() - 1]);
             let door_lp = self.local_placement(Some(lp), sh.wcs);
             let door = self.add(format!(
                 "IFCDOOR({},$,{},$,$,{},$,$,{},{},.DOOR.,$,$)",
@@ -452,13 +486,14 @@ impl Builder {
                 real(ht),
                 real(wd)
             ));
-            let g = self.derived_guid();
+            self.tag(door, o.guid.as_str());
+            let g = self.rel_guid("IfcRelVoidsElement", host_e, &[opening]);
             self.add(format!(
                 "IFCRELVOIDSELEMENT({g},$,$,$,{},{})",
                 r(host_e),
                 r(opening)
             ));
-            let g = self.derived_guid();
+            let g = self.rel_guid("IfcRelFillsElement", opening, &[door]);
             self.add(format!(
                 "IFCRELFILLSELEMENT({g},$,$,$,{},{})",
                 r(opening),
@@ -467,7 +502,7 @@ impl Builder {
             contained.entry(level).or_default().push(door);
         }
 
-        // Vani: profilo netto estruso per l'altezza del livello.
+        // Vani: profilo netto estruso per l'altezza minima dei muri di contorno.
         let mut spaces: BTreeMap<ElementId, Vec<usize>> = BTreeMap::new();
         for (&id, s) in &model.spaces {
             let Some(&(_, storey_lp)) = storeys.get(&s.level) else {
@@ -480,7 +515,12 @@ impl Builder {
             }
             let poly = geometry::space_net_polygon(model, &s.boundary)
                 .filter(|p| p.iter().all(|q| q.x.is_finite() && q.y.is_finite()));
-            let h = model.levels[&s.level].height.as_mm();
+            // Altezza: minima tra i muri di contorno.
+            let h = s
+                .boundary
+                .iter()
+                .map(|w| model.walls[w].height.as_mm())
+                .fold(f64::INFINITY, f64::min);
             let (Some(poly), true) = (poly, h.is_finite() && h > 0.0) else {
                 skipped.push((id, "contorno del vano non valido".to_owned()));
                 continue;
@@ -505,6 +545,7 @@ impl Builder {
                 r(lp),
                 r(pds)
             ));
+            self.tag(e, s.guid.as_str());
             spaces.entry(s.level).or_default().push(e);
         }
 
@@ -520,7 +561,7 @@ impl Builder {
                 self.rel_aggregates(storey, sp);
             }
             if let Some(els) = contained.get(lvl) {
-                let g = self.derived_guid();
+                let g = self.rel_guid("IfcRelContainedInSpatialStructure", storey, &[]);
                 self.add(format!(
                     "IFCRELCONTAINEDINSPATIALSTRUCTURE({g},$,$,$,{},{})",
                     list(els),

@@ -17,13 +17,21 @@ API: `ifc::export_ifc4(&Model, &mut impl Write)` e
 | Muri | `IfcWall` `.STANDARD.`; 'Body' 'SweptSolid': `IfcExtrudedAreaSolid` di `IfcRectangleProfileDef` (lunghezza x spessore) posizionato al centro dell'impronta, orientato lungo l'asse |
 | Aperture | `IfcOpeningElement` `.OPENING.` relativo al muro, solido estruso attraverso lo spessore (+10 mm per lato); `IfcRelVoidsElement` |
 | Porte | `IfcDoor` `.DOOR.` relativa all'apertura, `OverallWidth`/`OverallHeight`, senza rappresentazione; `IfcRelFillsElement` |
-| Vani | `IfcSpace` `.ELEMENT.` `.INTERNAL.`, 'Body' 'SweptSolid' di `IfcArbitraryClosedProfileDef` (`IfcPolyline` del poligono netto) estruso all'altezza del livello; aggregato al piano |
+| Vani | `IfcSpace` `.ELEMENT.` `.INTERNAL.`, 'Body' 'SweptSolid' di `IfcArbitraryClosedProfileDef` (`IfcPolyline` del poligono netto) estruso all'altezza minima dei muri di contorno; aggregato al piano |
 | Contenimento | `IfcRelContainedInSpatialStructure` (muri e porte) per piano |
 
 GUID: quelli del dominio per progetto, sito, edificio, livelli, muri, porte
-(`Opening.guid` -> `IfcDoor`) e vani. Relazioni e `IfcOpeningElement` usano GUID
-derivati deterministicamente dal GUID di progetto. `OwnerHistory` omessa
-(opzionale in IFC4).
+(`Opening.guid` -> `IfcDoor`) e vani. `IfcOpeningElement` e relazioni hanno GUID
+derivati in modo stabile da un hash a 128 bit implementato nel crate (doppio
+FNV-1a 64) di una chiave fissa: tipo + GUID della porta per il foro; tipo +
+GUID relating + GUID related per `IfcRelVoidsElement`/`IfcRelFillsElement`;
+tipo + GUID relating per `IfcRelAggregates` e
+`IfcRelContainedInSpatialStructure` (una per contenitore). Aggiungere o
+rimuovere altri elementi non cambia questi GUID; in caso di collisione si
+aggiunge un sale. `OwnerHistory` omessa (opzionale in IFC4).
+
+Nel golden i GUID del modello sono valori di test deterministici
+(`IfcGuid::from_u128` progressivo), non GUID reali.
 
 Determinismo: `#id` in ordine fisso (contesti, unita', struttura, livelli,
 muri, aperture, vani per `ElementId` crescente, relazioni); reali con 6
@@ -35,7 +43,9 @@ e non-ASCII come `\X2\..\X0\` / `\X4\..\X0\`. Golden:
 
 - Nessuna pulizia delle giunzioni: i solidi dei muri si sovrappongono negli angoli.
 - Nessun materiale, layer set, Pset, quantita' o stile di presentazione.
-- Nessuna rappresentazione 'Axis' dei muri; porte senza geometria propria.
+- Nessuna rappresentazione 'Axis' dei muri.
+- `IfcDoor` senza Representation propria in G0: in un viewer e' visibile solo
+  il vano (void) nel muro.
 - Vani: poligono netto calcolato sempre dall'asse dei muri (ignora `WallLocation`).
 - Elementi non esportabili (livello mancante, geometria degenere, ospite saltato)
   sono omessi e riportati in `ExportReport.skipped`.
