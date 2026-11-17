@@ -199,15 +199,23 @@ fn joint(a: (Point2, Point2), b: (Point2, Point2)) -> Point2 {
     best.1
 }
 
-/// Area netta (mm²) del vano: poligono degli estremi d'asse ridotto verso
-/// l'interno di meta' spessore di ciascun muro di contorno. Ignora
-/// `WallLocation` (usa sempre l'asse). Restituisce 0 per contorni non validi.
+/// Area netta (mm²) del vano: area di [`space_net_polygon`]. Restituisce 0 per
+/// contorni non validi.
 pub fn space_area(model: &Model, boundary: &[ElementId]) -> f64 {
-    let walls: Option<Vec<_>> = boundary.iter().map(|id| model.walls.get(id)).collect();
-    let Some(walls) = walls else { return 0.0 };
+    space_net_polygon(model, boundary).map_or(0.0, |p| signed_area(&p).abs())
+}
+
+/// Poligono netto del vano: estremi d'asse ridotti verso l'interno di meta'
+/// spessore di ciascun muro di contorno, nello stesso verso del contorno.
+/// Ignora `WallLocation` (usa sempre l'asse). `None` per contorni non validi.
+pub fn space_net_polygon(model: &Model, boundary: &[ElementId]) -> Option<Vec<Point2>> {
+    let walls: Vec<_> = boundary
+        .iter()
+        .map(|id| model.walls.get(id))
+        .collect::<Option<_>>()?;
     let n = walls.len();
     if n < 3 {
-        return 0.0;
+        return None;
     }
     // vertice i = giunto tra muro i-1 e muro i; il muro i va da v[i] a v[i+1].
     let v: Vec<Point2> = (0..n)
@@ -218,7 +226,7 @@ pub fn space_area(model: &Model, boundary: &[ElementId]) -> f64 {
         .collect();
     let sign = signed_area(&v).signum();
     if sign == 0.0 {
-        return 0.0;
+        return None;
     }
     // Rette d'asse traslate verso l'interno (sinistra se antiorario).
     let lines: Vec<(Point2, Vector2<f64>)> = (0..n)
@@ -243,5 +251,5 @@ pub fn space_area(model: &Model, boundary: &[ElementId]) -> f64 {
             }
         })
         .collect();
-    signed_area(&inset).abs()
+    Some(inset)
 }
