@@ -39,11 +39,22 @@ pub fn violations(meta: &Metadata, allowed: &[&str]) -> Vec<String> {
             out.push(format!("{name}: denylisted runtime"));
             continue;
         }
+        if allowed.contains(&name) {
+            continue;
+        }
+        if let Some(l) = &pkg.links {
+            out.push(format!("{name}: links = \"{l}\" non approvato"));
+            continue;
+        }
+        if name.ends_with("-sys") {
+            out.push(format!("{name}: crate -sys non approvato"));
+            continue;
+        }
         let has_build_rs = pkg
             .targets
             .iter()
             .any(|t| t.kind.iter().any(|k| k.to_string() == "custom-build"));
-        if !has_build_rs || allowed.contains(&name) {
+        if !has_build_rs {
             continue;
         }
         let native = pkg.dependencies.iter().find(|d| {
@@ -115,6 +126,24 @@ mod tests {
             vec!["--filter-platform", "x86_64-pc-windows-msvc"]
         );
         assert_eq!(SHIPPED_TARGETS, ["x86_64-pc-windows-msvc"]);
+    }
+
+    #[test]
+    fn flags_links_not_allowed() {
+        assert_eq!(
+            violations(&load("meta_links.json"), &[]),
+            vec!["foo: links = \"z\" non approvato"]
+        );
+        assert!(violations(&load("meta_links.json"), &["foo"]).is_empty());
+    }
+
+    #[test]
+    fn flags_sys_not_allowed() {
+        assert_eq!(
+            violations(&load("meta_sys.json"), &[]),
+            vec!["bar-sys: crate -sys non approvato"]
+        );
+        assert!(violations(&load("meta_sys.json"), &["bar-sys"]).is_empty());
     }
 
     #[test]
