@@ -6,8 +6,16 @@
 //! costante). Tutte le scritture hanno `Origin::Ai` e richiedono il grant GUI,
 //! tranne le preview (proposte). Su piattaforme non Windows `serve` restituisce
 //! `BridgeError::Unsupported`.
+//!
+//! Robustezza: timeout handshake (5 s) e di inattivita' (300 s), massimo 16
+//! connessioni (oltre: `busy`), accept loop che ritenta con backoff e termina
+//! solo su shutdown.
+//!
+//! TOCTOU noto: la policy e' verificata all'arrivo della richiesta; una
+//! scrittura gia' accodata al writer puo' completarsi dopo `Policy::revoke()`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use commands::{
     Command, CommandError, Origin, Request, RequestId, Response, Revision, WriterHandle,
@@ -15,11 +23,42 @@ use commands::{
 };
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(windows)]
+use tokio::sync::Semaphore;
 use tokio::sync::watch;
 
 use crate::policy::Policy;
 use crate::protocol::*;
 use crate::token::{Token, hex};
+
+/// Timeout per ricevere `Hello` dopo la connessione.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Inattivita' massima tra due richieste.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Connessioni contemporanee massime; oltre si risponde `busy`.
+pub const MAX_CONNECTIONS: usize = 16;
+#[cfg(windows)]
+const MIN_BACKOFF: Duration = Duration::from_millis(100);
+#[cfg(windows)]
+const MAX_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Parametri del server (configurabili per i test).
+#[derive(Copy, Clone, Debug)]
+pub struct ServeConfig {
+    pub handshake_timeout: Duration,
+    pub idle_timeout: Duration,
+    pub max_connections: usize,
+}
+
+impl Default for ServeConfig {
+    fn default() -> Self {
+        Self {
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            idle_timeout: IDLE_TIMEOUT,
+            max_connections: MAX_CONNECTIONS,
+        }
+    }
+}
 
 /// Segnale di arresto minimale (sostituto locale di `tokio_util::sync::CancellationToken`).
 #[derive(Clone, Debug)]
@@ -131,6 +170,19 @@ pub async fn serve(
     serve_on(&name, handle, policy, token, shutdown).await
 }
 
+/// Stub non Windows (R5).
+#[cfg(not(windows))]
+pub async fn serve_with(
+    _name: &str,
+    _cfg: ServeConfig,
+    _handle: WriterHandle,
+    _policy: Arc<Policy>,
+    _token: Token,
+    _shutdown: CancellationToken,
+) -> Result<(), BridgeError> {
+    Err(BridgeError::Unsupported)
+}
+
 /// Stub non Windows: il bridge in G0 esiste solo su Windows (R5).
 #[cfg(not(windows))]
 pub async fn serve_on(
@@ -143,7 +195,7 @@ pub async fn serve_on(
     Err(BridgeError::Unsupported)
 }
 
-/// Avvia il server su una pipe con nome esplicito, fino a `shutdown`.
+/// Avvia il server su una pipe con nome esplicito e configurazione predefinita.
 #[cfg(windows)]
 pub async fn serve_on(
     name: &str,
@@ -152,25 +204,110 @@ pub async fn serve_on(
     token: Token,
     shutdown: CancellationToken,
 ) -> Result<(), BridgeError> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .reject_remote_clients(true)
-        .create(name)?;
-    loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => return Ok(()),
-            r = server.connect() => r?,
-        }
-        let next = ServerOptions::new()
-            .reject_remote_clients(true)
-            .create(name)?;
-        let conn = std::mem::replace(&mut server, next);
-        let (h, p, t) = (handle.clone(), policy.clone(), token.clone());
-        tokio::spawn(async move {
-            let _ = handle_conn(conn, h, p, t).await;
-        });
+    serve_with(
+        name,
+        ServeConfig::default(),
+        handle,
+        policy,
+        token,
+        shutdown,
+    )
+    .await
+}
+
+/// Attesa cancellabile; `false` se e' arrivato lo shutdown.
+#[cfg(windows)]
+async fn backoff_sleep(d: &mut Duration, shutdown: &CancellationToken) -> bool {
+    let wait = *d;
+    *d = (*d * 2).min(MAX_BACKOFF);
+    tokio::select! {
+        _ = shutdown.cancelled() => false,
+        _ = tokio::time::sleep(wait) => true,
     }
+}
+
+/// Ciclo di accept resiliente: errori di `create`/`connect` (anche ripetuti)
+/// non terminano il server; si ritenta con backoff 100 ms -> 2 s. Il ciclo
+/// termina solo con `shutdown`. Oltre `max_connections` il client riceve
+/// `busy` e la connessione viene chiusa.
+#[cfg(windows)]
+pub async fn serve_with(
+    name: &str,
+    cfg: ServeConfig,
+    handle: WriterHandle,
+    policy: Arc<Policy>,
+    token: Token,
+    shutdown: CancellationToken,
+) -> Result<(), BridgeError> {
+    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+    let slots = Arc::new(Semaphore::new(cfg.max_connections));
+    let mut server: Option<NamedPipeServer> = None;
+    let mut first = true;
+    let mut backoff = MIN_BACKOFF;
+    loop {
+        if server.is_none() {
+            let mut opts = ServerOptions::new();
+            opts.reject_remote_clients(true);
+            if first {
+                opts.first_pipe_instance(true);
+            }
+            match opts.create(name) {
+                Ok(s) => {
+                    server = Some(s);
+                    first = false;
+                }
+                Err(_) => {
+                    if !backoff_sleep(&mut backoff, &shutdown).await {
+                        return Ok(());
+                    }
+                    continue;
+                }
+            }
+        }
+        let r = {
+            let srv = server.as_ref().expect("istanza creata");
+            tokio::select! {
+                _ = shutdown.cancelled() => return Ok(()),
+                r = srv.connect() => r,
+            }
+        };
+        let conn = server.take().expect("istanza creata");
+        if r.is_err() {
+            drop(conn);
+            if !backoff_sleep(&mut backoff, &shutdown).await {
+                return Ok(());
+            }
+            continue;
+        }
+        backoff = MIN_BACKOFF;
+        match slots.clone().try_acquire_owned() {
+            Ok(permit) => {
+                let (h, p, t) = (handle.clone(), policy.clone(), token.clone());
+                tokio::spawn(async move {
+                    let _ = handle_conn(conn, cfg, h, p, t).await;
+                    drop(permit);
+                });
+            }
+            Err(_) => {
+                tokio::spawn(async move {
+                    let mut conn = conn;
+                    let busy = BridgeResponse::err("busy", "troppe connessioni attive");
+                    let _ =
+                        tokio::time::timeout(cfg.handshake_timeout, send(&mut conn, &busy)).await;
+                });
+            }
+        }
+    }
+}
+
+/// Lettura con timeout; un timeout equivale a chiusura (`Ok(None)`).
+async fn read_timed<S: AsyncRead + Unpin>(
+    s: &mut S,
+    d: Duration,
+) -> Result<Option<Vec<u8>>, BridgeError> {
+    tokio::time::timeout(d, read_frame(s))
+        .await
+        .unwrap_or(Ok(None))
 }
 
 async fn send<S: AsyncWrite + Unpin>(s: &mut S, resp: &BridgeResponse) -> Result<(), BridgeError> {
@@ -180,12 +317,13 @@ async fn send<S: AsyncWrite + Unpin>(s: &mut S, resp: &BridgeResponse) -> Result
 /// Gestisce una connessione: handshake, poi richieste fino a EOF o errore.
 pub(crate) async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
     mut s: S,
+    cfg: ServeConfig,
     handle: WriterHandle,
     policy: Arc<Policy>,
     token: Token,
 ) -> Result<(), BridgeError> {
     // Handshake: il primo frame deve essere Hello con token valido.
-    let first = match read_frame(&mut s).await {
+    let first = match read_timed(&mut s, cfg.handshake_timeout).await {
         Ok(Some(b)) => b,
         Ok(None) => return Ok(()),
         Err(BridgeError::TooLarge(_)) => {
@@ -227,7 +365,7 @@ pub(crate) async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
     send(&mut s, &ack).await?;
 
     loop {
-        let body = match read_frame(&mut s).await {
+        let body = match read_timed(&mut s, cfg.idle_timeout).await {
             Ok(Some(b)) => b,
             Ok(None) => return Ok(()),
             Err(BridgeError::TooLarge(n)) => {
@@ -347,6 +485,10 @@ mod tests {
     }
 
     fn start(suffix: &str) -> Fx {
+        start_with(suffix, ServeConfig::default())
+    }
+
+    fn start_with(suffix: &str, cfg: ServeConfig) -> Fx {
         let (m, ids) = sample_room();
         let handle = spawn_writer(CommandService::new(m));
         let name = pipe_name_with_suffix(&format!("{suffix}-{}", std::process::id())).unwrap();
@@ -354,7 +496,7 @@ mod tests {
         let token = Token::generate().unwrap();
         let stop = CancellationToken::new();
         let (n, p, t, c) = (name.clone(), policy.clone(), token.clone(), stop.clone());
-        tokio::spawn(async move { serve_on(&n, handle, p, t, c).await.unwrap() });
+        tokio::spawn(async move { serve_with(&n, cfg, handle, p, t, c).await.unwrap() });
         Fx {
             name,
             policy,
@@ -509,6 +651,54 @@ mod tests {
         assert!(
             r["body"]["message"].as_str().unwrap().contains("[1]"),
             "{r}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn silent_client_dropped_after_handshake_timeout() {
+        let cfg = ServeConfig {
+            handshake_timeout: Duration::from_millis(200),
+            ..ServeConfig::default()
+        };
+        let fx = start_with("silent", cfg);
+        let mut c = connect(&fx.name).await;
+        let t0 = std::time::Instant::now();
+        let r = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut c)).await;
+        let closed = r
+            .expect("il server deve chiudere")
+            .map(|o| o.is_none())
+            .unwrap_or(true);
+        assert!(closed);
+        assert!(t0.elapsed() < Duration::from_secs(3));
+        let mut c2 = hello(&fx).await;
+        assert_eq!(
+            call(&mut c2, json!({"type":"Summary"})).await.unwrap()["type"],
+            "Summary"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connection_cap_rejects_extra() {
+        let cfg = ServeConfig {
+            max_connections: 1,
+            ..ServeConfig::default()
+        };
+        let fx = start_with("cap", cfg);
+        let mut c1 = hello(&fx).await;
+        let mut c2 = connect(&fx.name).await;
+        let body = read_frame(&mut c2).await.unwrap().unwrap();
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(code(&r), "busy");
+        assert_eq!(
+            call(&mut c1, json!({"type":"Summary"})).await.unwrap()["type"],
+            "Summary"
+        );
+        drop(c1);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut c3 = hello(&fx).await;
+        assert_eq!(
+            call(&mut c3, json!({"type":"Summary"})).await.unwrap()["type"],
+            "Summary"
         );
     }
 }

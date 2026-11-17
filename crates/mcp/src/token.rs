@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub const TOKEN_FILE: &str = "session.token";
 
 /// Token segreto di 32 byte, rappresentato in esadecimale.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Token(String);
 
 impl fmt::Debug for Token {
@@ -82,7 +82,7 @@ mod tests {
         let a = Token::generate().unwrap();
         let b = Token::generate().unwrap();
         assert_eq!(a.as_str().len(), 64);
-        assert_ne!(a, b);
+        assert_ne!(a.as_str(), b.as_str());
         assert!(a.matches(a.as_str()));
         assert!(!a.matches(b.as_str()));
         assert!(!a.matches(""));
@@ -95,7 +95,7 @@ mod tests {
         let t = Token::generate().unwrap();
         let p = write_token_file(&dir, &t).unwrap();
         assert!(p.ends_with(TOKEN_FILE));
-        assert_eq!(read_token_file(&dir).unwrap(), t);
+        assert_eq!(read_token_file(&dir).unwrap().as_str(), t.as_str());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

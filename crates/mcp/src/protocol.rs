@@ -49,7 +49,13 @@ pub enum BridgeRequest {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Risposta del bridge (`{"type": ..., "body": ...}`).
+///
+/// Convenzione handshake: un `Hello` valido riceve
+/// `Ok { revision: <corrente>, created: [], preview: false }`.
+/// Codici di errore: `forbidden`, `conflict`, `invalid`, `bad_token`,
+/// `too_large`, `unsupported_protocol`, `busy`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "body")]
 pub enum BridgeResponse {
     Ok {
@@ -59,15 +65,15 @@ pub enum BridgeResponse {
     },
     Summary(Value),
     Err {
-        code: &'static str,
+        code: String,
         message: String,
     },
 }
 
 impl BridgeResponse {
-    pub fn err(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn err(code: &str, message: impl Into<String>) -> Self {
         BridgeResponse::Err {
-            code,
+            code: code.to_string(),
             message: message.into(),
         }
     }
