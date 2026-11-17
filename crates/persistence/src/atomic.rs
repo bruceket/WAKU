@@ -50,7 +50,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("waku-atomic-{tag}-{}", std::process::id()));
