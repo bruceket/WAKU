@@ -1,0 +1,9 @@
+//! Dominio BIM (G0): vuoto per ora.
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn smoke() {
+        assert_eq!(2 + 2, 4);
+    }
+}
