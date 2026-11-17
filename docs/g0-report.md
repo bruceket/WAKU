@@ -24,22 +24,24 @@ Equivalenza tra canali (richiesta dal piano di chiusura): `same_actions_same_mod
 - i GUID di dominio sono casuali per canale, quindi il modello viene confrontato senza guid e
   senza id (muri: estremi, spessore, altezza, posizione; aperture: indice del muro ospite,
   offset, larghezza, altezza, davanzale; vani: contorno come indici di muro, nome; unita' di
-  progetto);
+  progetto). Il confronto **esclude** livelli e nome del progetto;
 - nell'IFC ogni GUID di 22 caratteri e' sostituito da un segnaposto numerato per prima
   comparsa; timestamp fisso (`WAKU_FIXED_TIMESTAMP` per la CLI, `ExportOptions` negli altri
   canali); il numero di entita' deve coincidere.
 
 Note sul test:
 
+- Il confronto avviene dopo ogni passo: dopo T1 (esattamente 1 vano con 4 muri di contorno, in
+  tutti e tre i canali; CLI: modello ricaricato dopo il primo `apply`, bridge: snapshot del writer
+  tra T1 e T2), dopo T2 e, nei canali (a) e (c), dopo Undo (deve coincidere con lo stato dopo T1,
+  cioe' posizione originale del muro) e dopo Redo (deve coincidere con lo stato dopo T2).
 - La CLI non ha un comando di undo/redo: per il canale CLI si applicano le due transazioni
-  senza Undo/Redo, mentre (a) e (c) eseguono Undo e poi Redo (effetto netto nullo). Il test
-  verifica quindi l'equivalenza del risultato finale, non l'equivalenza del comando di undo
-  nella CLI (che non esiste).
+  (file JSON separati) senza Undo/Redo; l'equivalenza dell'undo e' verificata solo tra (a) e (c).
 - La transazione T2 e' un `MoveWall` di 500 mm in y del primo muro **senza** un successivo
   `DetectSpaces`: lo spostamento porta gli estremi sulla parte interna dei muri adiacenti
   (giunzione a T) e G0 rifiuta quella geometria con un errore esplicito
   (`CommandError::Geometry`). Il vano rilevato in T1 viene rimosso dal `MoveWall`, quindi il
-  modello finale ha 4 muri, 1 porta e 0 vani. Questo e' un effetto del limite noto "giunzioni
+  modello dopo T2 ha 4 muri, 1 porta e 0 vani (dopo T1: 1 vano). Questo e' un effetto del limite noto "giunzioni
   senza pulizia" (sotto), non un difetto del test.
 - Il canale (c) gira solo su Windows (`cfg(windows)`), perche' il bridge e' a named pipe.
 

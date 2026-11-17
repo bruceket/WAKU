@@ -1,4 +1,4 @@
-//! Equivalenza tra canali (AC-24): le stesse azioni applicate direttamente al
+//! Equivalenza tra canali: le stesse azioni applicate direttamente al
 //! `CommandService` (Gui), via `waku-cli apply` e via bridge IPC + client
 //! producono lo stesso modello (normalizzato) e lo stesso IFC (normalizzato).
 //!
@@ -6,6 +6,10 @@
 //! DetectSpaces; T2 = MoveWall del primo muro (dy 500; rimuove il vano che il
 //! muro delimita, e un nuovo DetectSpaces fallirebbe per T-junction senza
 //! pulizia giunzioni); poi Undo e Redo.
+//!
+//! Il confronto normalizzato copre muri, aperture, vani e unita' di progetto;
+//! esclude guid, id, livelli e nome del progetto. Lo stato e' confrontato
+//! dopo T1 (con 1 vano), dopo T2, dopo Undo (= dopo T1) e dopo Redo (= dopo T2).
 //!
 //! La CLI non ha un comando di undo/redo: per il canale CLI si applicano T1 e
 //! T2 senza Undo/Redo, mentre (a) e (c) eseguono Undo poi Redo (effetto netto
@@ -177,13 +181,30 @@ fn export(m: &Model) -> String {
 
 // ---- canale (a): CommandService diretto, origin Gui ----
 
-fn channel_direct(t1: &[Action], t2: &[Action]) -> Model {
+/// Stati del modello dopo ogni passo. `undo`/`redo` assenti per la CLI.
+struct Stages {
+    after_t1: Model,
+    after_t2: Model,
+    after_undo: Option<Model>,
+    after_redo: Option<Model>,
+}
+
+fn channel_direct(t1: &[Action], t2: &[Action]) -> Stages {
     let mut svc = CommandService::new(empty_model());
+    let snap = |s: &CommandService| (*s.snapshot().model).clone();
     svc.execute(cmd(svc.revision(), t1.to_vec())).unwrap();
+    let after_t1 = snap(&svc);
     svc.execute(cmd(svc.revision(), t2.to_vec())).unwrap();
+    let after_t2 = snap(&svc);
     svc.undo(svc.revision(), Origin::Gui).unwrap();
+    let after_undo = Some(snap(&svc));
     svc.redo(svc.revision(), Origin::Gui).unwrap();
-    (*svc.snapshot().model).clone()
+    Stages {
+        after_t1,
+        after_t2,
+        after_undo,
+        after_redo: Some(snap(&svc)),
+    }
 }
 
 // ---- canale (b): waku-cli apply (senza Undo/Redo, assenti nella CLI) ----
@@ -219,21 +240,30 @@ fn run_cli(args: &[&Path], env_ts: bool) {
     );
 }
 
-fn channel_cli(t1: &[Action], t2: &[Action], level: ElementId) -> (Model, String) {
+fn channel_cli(t1: &[Action], t2: &[Action], level: ElementId) -> (Stages, String) {
     let d = Tmp::new("cli");
     let file = d.0.join(format!("{NAME}.waku"));
     run_cli(&[Path::new("new"), &file], false);
     let fresh = persistence::load(&file).unwrap();
     assert_eq!(fresh.levels.keys().next(), Some(&level), "id livello");
+    let mut states = Vec::new();
     for (n, t) in [("t1", t1), ("t2", t2)] {
         let j = d.0.join(format!("{n}.json"));
         std::fs::write(&j, serde_json::to_string(t).unwrap()).unwrap();
         run_cli(&[Path::new("apply"), &file, &j], false);
+        states.push(persistence::load(&file).unwrap());
     }
     let ifc = d.0.join(format!("{NAME}.ifc"));
     run_cli(&[Path::new("export-ifc"), &file, &ifc], true);
+    let after_t2 = states.pop().unwrap();
+    let after_t1 = states.pop().unwrap();
     (
-        persistence::load(&file).unwrap(),
+        Stages {
+            after_t1,
+            after_t2,
+            after_undo: None,
+            after_redo: None,
+        },
         std::fs::read_to_string(&ifc).unwrap(),
     )
 }
@@ -241,7 +271,7 @@ fn channel_cli(t1: &[Action], t2: &[Action], level: ElementId) -> (Model, String
 // ---- canale (c): bridge IPC + BridgeClient (solo Windows) ----
 
 #[cfg(windows)]
-fn channel_bridge(t1: &[Action], t2: &[Action]) -> Model {
+fn channel_bridge(t1: &[Action], t2: &[Action]) -> Stages {
     use commands::{Request, Response, spawn_writer};
     use mcp::{
         BridgeClient, BridgeRequest, BridgeResponse, CancellationToken, Policy, ServeConfig, Token,
@@ -277,7 +307,14 @@ fn channel_bridge(t1: &[Action], t2: &[Action]) -> Model {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let mut c = client.expect("bridge non raggiungibile");
+        let snapshot = || {
+            let Response::Snapshot(snap) = handle.send(Request::Snapshot).recv().unwrap() else {
+                panic!("snapshot atteso")
+            };
+            (*snap.model).clone()
+        };
         let mut rev = 0u64;
+        let mut states = Vec::new();
         for (id, t) in [("equiv-t1", t1), ("equiv-t2", t2)] {
             let r = c
                 .request(BridgeRequest::Envelope {
@@ -292,6 +329,7 @@ fn channel_bridge(t1: &[Action], t2: &[Action]) -> Model {
                 panic!("risposta inattesa: {r:?}")
             };
             rev = revision;
+            states.push(snapshot());
         }
         for req in [
             BridgeRequest::Undo {
@@ -303,12 +341,16 @@ fn channel_bridge(t1: &[Action], t2: &[Action]) -> Model {
         ] {
             let r = c.request(req).await.unwrap();
             assert!(matches!(r, BridgeResponse::Ok { .. }), "{r:?}");
+            states.push(snapshot());
         }
-        let Response::Snapshot(snap) = handle.send(Request::Snapshot).recv().unwrap() else {
-            panic!("snapshot atteso")
-        };
         stop.cancel();
-        (*snap.model).clone()
+        let mut it = states.into_iter();
+        Stages {
+            after_t1: it.next().unwrap(),
+            after_t2: it.next().unwrap(),
+            after_undo: it.next(),
+            after_redo: it.next(),
+        }
     })
 }
 
@@ -318,15 +360,30 @@ fn same_actions_same_model() {
     let a = channel_direct(&t1, &t2);
     let (b, b_ifc) = channel_cli(&t1, &t2, level);
 
-    // sanita' del risultato: 4 muri, porta, vano rimosso dal MoveWall
-    assert_eq!(a.walls.len(), 4);
-    assert_eq!(a.openings.len(), 1);
-    assert_eq!(a.spaces.len(), 0);
+    // Dopo T1: 4 muri, 1 porta, esattamente 1 vano con 4 muri di contorno.
+    let m1 = &a.after_t1;
+    assert_eq!(m1.walls.len(), 4);
+    assert_eq!(m1.openings.len(), 1);
+    assert_eq!(m1.spaces.len(), 1);
+    assert_eq!(m1.spaces.values().next().unwrap().boundary.len(), 4);
+    // Dopo T2: vano rimosso dal MoveWall.
+    assert_eq!(a.after_t2.spaces.len(), 0);
 
-    let na = normalize_model(&a);
-    assert_eq!(na, normalize_model(&b), "modello CLI diverso da diretto");
+    let n1 = normalize_model(&a.after_t1);
+    let n2 = normalize_model(&a.after_t2);
+    assert!(n1.contains("space "), "vano atteso dopo T1");
+    assert_ne!(n1, n2, "T2 deve cambiare il modello");
 
-    let ia = normalize_ifc(&export(&a));
+    // Undo/Redo nel canale diretto: stato dopo Undo = dopo T1 (posizione
+    // originale del muro), dopo Redo = dopo T2.
+    assert_eq!(n1, normalize_model(a.after_undo.as_ref().unwrap()), "undo");
+    assert_eq!(n2, normalize_model(a.after_redo.as_ref().unwrap()), "redo");
+
+    // CLI: stesso stato dopo T1 (vano incluso) e dopo T2.
+    assert_eq!(n1, normalize_model(&b.after_t1), "CLI dopo T1");
+    assert_eq!(n2, normalize_model(&b.after_t2), "CLI dopo T2");
+
+    let ia = normalize_ifc(&export(a.after_redo.as_ref().unwrap()));
     let ib = normalize_ifc(&b_ifc);
     assert_eq!(entity_count(&ia), entity_count(&ib));
     assert_eq!(ia, ib, "IFC CLI diverso da diretto");
@@ -334,8 +391,20 @@ fn same_actions_same_model() {
     #[cfg(windows)]
     {
         let c = channel_bridge(&t1, &t2);
-        assert_eq!(na, normalize_model(&c), "modello bridge diverso da diretto");
-        let ic = normalize_ifc(&export(&c));
+        assert_eq!(c.after_t1.spaces.len(), 1);
+        assert_eq!(n1, normalize_model(&c.after_t1), "bridge dopo T1");
+        assert_eq!(n2, normalize_model(&c.after_t2), "bridge dopo T2");
+        assert_eq!(
+            n1,
+            normalize_model(c.after_undo.as_ref().unwrap()),
+            "bridge undo"
+        );
+        assert_eq!(
+            n2,
+            normalize_model(c.after_redo.as_ref().unwrap()),
+            "bridge redo"
+        );
+        let ic = normalize_ifc(&export(c.after_redo.as_ref().unwrap()));
         assert_eq!(entity_count(&ia), entity_count(&ic));
         assert_eq!(ia, ic, "IFC bridge diverso da diretto");
     }
