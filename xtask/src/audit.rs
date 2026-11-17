@@ -1,6 +1,18 @@
 use anyhow::{Context, bail};
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand};
 
+/// Target distribuiti (AC-16): l'audit copre solo cio' che entra nel build spedito.
+/// Linux e macOS si aggiungono in R5.
+pub const SHIPPED_TARGETS: [&str; 1] = ["x86_64-pc-windows-msvc"];
+
+/// Argomenti extra per `cargo metadata`: un `--filter-platform` per target distribuito.
+pub fn metadata_args() -> Vec<String> {
+    SHIPPED_TARGETS
+        .iter()
+        .flat_map(|t| ["--filter-platform".to_string(), (*t).to_string()])
+        .collect()
+}
+
 const NATIVE_BUILD_DEPS: [&str; 3] = ["cc", "cmake", "bindgen"];
 const DENY_PREFIXES: [&str; 8] = [
     "opencascade",
@@ -54,7 +66,10 @@ fn parse_allowed(doc: &str) -> Vec<&str> {
 }
 
 pub fn run() -> anyhow::Result<()> {
-    let meta = MetadataCommand::new().exec().context("cargo metadata")?;
+    let meta = MetadataCommand::new()
+        .other_options(metadata_args())
+        .exec()
+        .context("cargo metadata")?;
     let doc_path = meta.workspace_root.join("docs/native-deps.md");
     let doc = std::fs::read_to_string(&doc_path).with_context(|| format!("lettura {doc_path}"))?;
     let v = violations(&meta, &parse_allowed(&doc));
@@ -91,6 +106,15 @@ mod tests {
             violations(&load("meta_rhai.json"), &[]),
             vec!["rhai: denylisted runtime"]
         );
+    }
+
+    #[test]
+    fn metadata_filters_shipped_targets_only() {
+        assert_eq!(
+            metadata_args(),
+            vec!["--filter-platform", "x86_64-pc-windows-msvc"]
+        );
+        assert_eq!(SHIPPED_TARGETS, ["x86_64-pc-windows-msvc"]);
     }
 
     #[test]
