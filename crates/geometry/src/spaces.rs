@@ -19,6 +19,61 @@ use thiserror::Error;
 pub enum SpaceDiag {
     #[error("contorno aperto: muri con estremo libero {dangling:?}")]
     OpenContour { dangling: Vec<ElementId> },
+    /// Configurazione fuori dal perimetro G0: incroci senza nodo comune,
+    /// T-junction (estremo sulla parte interna di un altro muro), sovrapposizioni
+    /// collineari, muri duplicati o con estremi fusi.
+    #[error("geometria non supportata ({reason}): muri {walls:?}")]
+    Unsupported {
+        walls: Vec<ElementId>,
+        reason: String,
+    },
+}
+
+fn unsupported(mut walls: Vec<ElementId>, reason: &str) -> SpaceDiag {
+    walls.sort();
+    SpaceDiag::Unsupported {
+        walls,
+        reason: reason.to_owned(),
+    }
+}
+
+fn dist_to_segment(p: Point2, a: Point2, b: Point2) -> f64 {
+    let ab = b - a;
+    let t = ((p - a).dot(&ab) / ab.norm_squared()).clamp(0.0, 1.0);
+    (p - (a + ab * t)).norm()
+}
+
+fn cross(o: Point2, a: Point2, b: Point2) -> f64 {
+    let (u, v) = (a - o, b - o);
+    u.x * v.y - u.y * v.x
+}
+
+/// Verifica a coppie: estremo sulla parte interna di un altro muro
+/// (T-junction o sovrapposizione collineare) e incroci propri.
+fn check_supported(segs: &[(ElementId, Point2, Point2)], tol: f64) -> Result<(), SpaceDiag> {
+    for (i, &(ia, a0, a1)) in segs.iter().enumerate() {
+        for &(ib, b0, b1) in &segs[i + 1..] {
+            let interior = |p: Point2, s: Point2, e: Point2| {
+                (p - s).norm() > tol && (p - e).norm() > tol && dist_to_segment(p, s, e) <= tol
+            };
+            if interior(b0, a0, a1)
+                || interior(b1, a0, a1)
+                || interior(a0, b0, b1)
+                || interior(a1, b0, b1)
+            {
+                return Err(unsupported(
+                    vec![ia, ib],
+                    "estremo sulla parte interna di un altro muro (T-junction o sovrapposizione)",
+                ));
+            }
+            let (d1, d2) = (cross(a0, a1, b0), cross(a0, a1, b1));
+            let (d3, d4) = (cross(b0, b1, a0), cross(b0, b1, a1));
+            if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+                return Err(unsupported(vec![ia, ib], "incrocio senza nodo comune"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn node_for(g: &mut UnGraph<Point2, ElementId>, p: Point2, tol: f64) -> NodeIndex {
@@ -34,13 +89,24 @@ pub fn detect_spaces(
     level: ElementId,
     tol_mm: f64,
 ) -> Result<Vec<Vec<ElementId>>, SpaceDiag> {
+    let segs: Vec<(ElementId, Point2, Point2)> = model
+        .walls
+        .iter()
+        .filter(|(_, w)| w.level == level)
+        .map(|(&id, w)| (id, w.start, w.end))
+        .collect();
+    check_supported(&segs, tol_mm)?;
     let mut g: UnGraph<Point2, ElementId> = UnGraph::new_undirected();
-    for (&id, w) in model.walls.iter().filter(|(_, w)| w.level == level) {
-        let a = node_for(&mut g, w.start, tol_mm);
-        let b = node_for(&mut g, w.end, tol_mm);
-        if a != b {
-            g.add_edge(a, b, id);
+    for &(id, s, e) in &segs {
+        let a = node_for(&mut g, s, tol_mm);
+        let b = node_for(&mut g, e, tol_mm);
+        if a == b {
+            return Err(unsupported(vec![id], "estremi fusi entro la tolleranza"));
         }
+        if let Some(dup) = g.find_edge(a, b) {
+            return Err(unsupported(vec![g[dup], id], "muri duplicati"));
+        }
+        g.add_edge(a, b, id);
     }
     let mut dangling: Vec<ElementId> = g
         .node_indices()

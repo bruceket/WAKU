@@ -112,7 +112,9 @@ fn open_contour_diagnosed() {
     let (mut m, ids) = sample_room();
     m.walls.remove(&ids.walls[2]);
     let e = detect_spaces(&m, ids.level, 1.0).unwrap_err();
-    let SpaceDiag::OpenContour { mut dangling } = e;
+    let SpaceDiag::OpenContour { mut dangling } = e else {
+        panic!("diagnostica inattesa: {e:?}")
+    };
     dangling.sort();
     assert_eq!(dangling, vec![ids.walls[1], ids.walls[3]]);
 }
@@ -122,4 +124,61 @@ fn net_area_sample() {
     let (m, ids) = sample_room();
     let a = space_area(&m, &ids.walls);
     assert!((a - 3900.0 * 2900.0).abs() < 1e-6, "area {a}");
+}
+
+fn add_wall(
+    m: &mut domain::Model,
+    proto: domain::ElementId,
+    s: (f64, f64),
+    e: (f64, f64),
+) -> domain::ElementId {
+    let mut w = m.walls[&proto].clone();
+    w.start = domain::Point2::new(s.0, s.1);
+    w.end = domain::Point2::new(e.0, e.1);
+    let id = m.alloc_id();
+    m.walls.insert(id, w);
+    id
+}
+
+fn unsupported_walls(r: Result<Vec<Vec<domain::ElementId>>, SpaceDiag>) -> Vec<domain::ElementId> {
+    match r {
+        Err(SpaceDiag::Unsupported { walls, .. }) => walls,
+        other => panic!("atteso Unsupported, ottenuto {other:?}"),
+    }
+}
+
+#[test]
+fn crossing_walls_unsupported() {
+    let (mut m, ids) = sample_room();
+    // Croce interna: due muri che si intersecano senza nodo comune.
+    let a = add_wall(&mut m, ids.walls[0], (1000.0, 1500.0), (3000.0, 1500.0));
+    let b = add_wall(&mut m, ids.walls[0], (2000.0, 500.0), (2000.0, 2500.0));
+    let w = unsupported_walls(detect_spaces(&m, ids.level, 1.0));
+    assert_eq!(w, vec![a, b]);
+}
+
+#[test]
+fn duplicate_wall_unsupported() {
+    let (mut m, ids) = sample_room();
+    let d = add_wall(&mut m, ids.walls[1], (4000.0, 3000.0), (4000.0, 0.0));
+    let w = unsupported_walls(detect_spaces(&m, ids.level, 1.0));
+    assert_eq!(w, vec![ids.walls[1], d]);
+}
+
+#[test]
+fn collapsed_wall_unsupported() {
+    let (mut m, ids) = sample_room();
+    let c = add_wall(&mut m, ids.walls[1], (10.0, 10.0), (10.5, 10.0));
+    let w = unsupported_walls(detect_spaces(&m, ids.level, 1.0));
+    assert_eq!(w, vec![c]);
+}
+
+/// Scelta esplicita: una T-junction (estremo sulla parte interna di un muro)
+/// e' `Unsupported`, non `OpenContour`.
+#[test]
+fn t_junction_unsupported_or_open() {
+    let (mut m, ids) = sample_room();
+    let t = add_wall(&mut m, ids.walls[0], (2000.0, 0.0), (2000.0, 3000.0));
+    let w = unsupported_walls(detect_spaces(&m, ids.level, 1.0));
+    assert!(w.contains(&t) && w.contains(&ids.walls[0]), "{w:?}");
 }

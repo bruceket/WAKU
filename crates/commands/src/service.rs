@@ -192,10 +192,14 @@ fn apply(m: &mut Model, a: &Action, created: &mut Vec<ElementId>) -> Result<(), 
             w.start.y += dy_mm;
             w.end.x += dx_mm;
             w.end.y += dy_mm;
+            // I vani delimitati dal muro non sono piu' validi: rimossi in cascata
+            // (vanno rilevati di nuovo con DetectSpaces).
+            m.spaces.retain(|_, s| !s.boundary.contains(id));
         }
         Action::DeleteWall { id } => {
             m.walls.remove(id).ok_or(CommandError::NotFound(*id))?;
             m.openings.retain(|_, o| o.host != *id);
+            m.spaces.retain(|_, s| !s.boundary.contains(id));
         }
         Action::AddDoor {
             host,
@@ -604,6 +608,58 @@ mod tests {
         assert!(matches!(e, CommandError::Geometry(_)));
         assert_eq!(*svc.snapshot().model, m);
         assert_eq!(svc.revision(), Revision(0));
+    }
+
+    fn with_space() -> (CommandService, domain::fixtures::SampleIds) {
+        let (m, ids) = sample_room();
+        let mut svc = CommandService::new(m);
+        svc.execute(cmd(
+            "sp",
+            0,
+            vec![Action::DetectSpaces { level: ids.level }],
+        ))
+        .unwrap();
+        assert_eq!(svc.snapshot().model.spaces.len(), 1);
+        (svc, ids)
+    }
+
+    #[test]
+    fn delete_wall_removes_bounding_spaces() {
+        let (mut svc, ids) = with_space();
+        svc.execute(cmd("d", 1, vec![Action::DeleteWall { id: ids.walls[1] }]))
+            .unwrap();
+        assert!(svc.snapshot().model.spaces.is_empty());
+    }
+
+    #[test]
+    fn move_wall_removes_bounding_spaces() {
+        let (mut svc, ids) = with_space();
+        svc.execute(cmd(
+            "m",
+            1,
+            vec![Action::MoveWall {
+                id: ids.walls[1],
+                dx_mm: 100.0,
+                dy_mm: 0.0,
+            }],
+        ))
+        .unwrap();
+        assert!(svc.snapshot().model.spaces.is_empty());
+    }
+
+    #[test]
+    fn detect_spaces_unsupported_is_geometry_error() {
+        let (mut m, ids) = sample_room();
+        let mut w = m.walls[&ids.walls[1]].clone();
+        std::mem::swap(&mut w.start, &mut w.end);
+        let id = m.alloc_id();
+        m.walls.insert(id, w);
+        let mut svc = CommandService::new(m.clone());
+        let e = svc
+            .execute(cmd("u", 0, vec![Action::DetectSpaces { level: ids.level }]))
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Geometry(_)));
+        assert_eq!(*svc.snapshot().model, m);
     }
 
     #[test]
