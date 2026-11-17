@@ -45,7 +45,8 @@ pub fn local_vertices(mesh: &Mesh, origin: [f64; 3]) -> Vec<Vertex> {
 }
 
 pub struct GpuMesh {
-    pub source: Mesh,
+    pub element: domain::ElementId,
+    pub hash: u64,
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
@@ -85,7 +86,8 @@ impl GpuMesh {
             }],
         });
         Self {
-            source: mesh.clone(),
+            element: mesh.element,
+            hash: crate::upload::content_hash(mesh),
             vertex_buffer,
             index_buffer,
             index_count: mesh.indices.len() as u32,

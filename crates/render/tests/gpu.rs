@@ -97,11 +97,25 @@ fn renders_nonempty_frame() {
         .count();
     assert!(lit > 0, "frame vuoto");
 
-    let mut r = SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
-    r.upload(&device, &queue, &[mesh]);
+    let mut r = SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, None);
+    let s = r.upload(&device, &queue, &[mesh]);
+    assert_eq!(s.uploaded, 1);
     assert_eq!(
         r.pick(&device, &queue, &camera, size, 32, 32),
         Some(ElementId::new(7))
     );
     assert_eq!(r.pick(&device, &queue, &camera, size, 0, 0), None);
+
+    // upload incrementale: 5 elementi, ne sposto 1 (piccolo drift: niente re-origin)
+    let base: Vec<Mesh> = (0..5)
+        .map(|i| cube(i, [1.0e7 + 2000.0 * i as f64, 1.0e7, 0.0]))
+        .collect();
+    let s = r.upload(&device, &queue, &base);
+    assert_eq!((s.reused, s.uploaded), (0, 5));
+    let origin = r.origin();
+    let mut moved = base.clone();
+    moved[4] = cube(4, [1.0e7 + 9000.0, 1.0e7 + 500.0, 0.0]);
+    let s = r.upload(&device, &queue, &moved);
+    assert_eq!((s.reused, s.uploaded, s.removed), (4, 1, 0));
+    assert_eq!(r.origin(), origin);
 }

@@ -32,6 +32,9 @@ pub fn origin_for(meshes: &[Mesh]) -> [f64; 3] {
     ]
 }
 
+/// Limite del pitch (evita la degenerazione di look_at ai poli).
+pub const MAX_PITCH: f64 = std::f64::consts::FRAC_PI_2 - 0.01;
+
 /// Camera orbitale (Z verso l'alto). Angoli in radianti, distanza in unità modello (mm).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OrbitCamera {
@@ -56,7 +59,7 @@ impl OrbitCamera {
     /// Posizione dell'occhio in coordinate mondo.
     pub fn eye(&self) -> [f64; 3] {
         let (sy, cy) = self.yaw.sin_cos();
-        let (sp, cp) = self.pitch.sin_cos();
+        let (sp, cp) = self.pitch.clamp(-MAX_PITCH, MAX_PITCH).sin_cos();
         [
             self.target[0] + self.distance * cp * cy,
             self.target[1] + self.distance * cp * sy,
@@ -125,5 +128,22 @@ mod tests {
         assert!((c.x / c.w).abs() < 1e-4 && (c.y / c.w).abs() < 1e-4);
         let z = c.z / c.w;
         assert!((0.0..=1.0).contains(&z));
+    }
+}
+
+#[cfg(test)]
+mod pitch_tests {
+    use super::*;
+
+    #[test]
+    fn pitch_clamped_at_pole() {
+        let cam = OrbitCamera {
+            pitch: 10.0,
+            distance: 1.0,
+            ..OrbitCamera::default()
+        };
+        let e = cam.eye();
+        assert!(e[0].hypot(e[1]) > 1e-3, "l'occhio non deve stare sul polo");
+        assert!(cam.view_proj(1.0, [0.0; 3]).iter().all(|v| v.is_finite()));
     }
 }

@@ -5,6 +5,7 @@
 pub mod camera;
 pub mod gpu_mesh;
 pub mod picking;
+pub mod upload;
 
 pub use camera::{OrbitCamera, origin_for, to_local};
 pub use picking::{decode_pick_id, encode_pick_id};
@@ -14,6 +15,8 @@ use domain::ElementId;
 use egui_wgpu::wgpu;
 use geometry::Mesh;
 use gpu_mesh::{GpuMesh, InstanceUniform, Vertex};
+use std::collections::HashMap;
+pub use upload::{UploadPlan, UploadStats, plan_upload};
 
 /// Colore di evidenziazione dell'elemento selezionato (accent #ED6B3B).
 pub const SELECTED_COLOR: [f32; 4] = [0.929, 0.420, 0.231, 1.0];
@@ -49,18 +52,17 @@ pub struct SceneRenderer {
     pick_pipeline: wgpu::RenderPipeline,
     meshes: Vec<GpuMesh>,
     origin: [f64; 3],
+    origin_set: bool,
     selected: Option<ElementId>,
 }
 
 impl SceneRenderer {
-    /// Renderer per un target colore `format` senza depth buffer.
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        Self::with_depth(device, format, None)
-    }
-
-    /// Come [`SceneRenderer::new`], con il formato depth del render pass ospite
-    /// (es. eframe `NativeOptions::depth_buffer`).
-    pub fn with_depth(
+    /// Crea il renderer per il target colore `format`.
+    ///
+    /// `depth_format` DEVE coincidere con il formato depth del render pass ospite: in eframe è
+    /// quello derivato da `NativeOptions::depth_buffer` (Task 12: `depth_buffer = 32` →
+    /// `Depth32Float`). `None` solo se il pass non ha depth attachment (nessun depth test).
+    pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         depth_format: Option<wgpu::TextureFormat>,
@@ -109,14 +111,8 @@ impl SceneRenderer {
             label: Some("waku pick.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/pick.wgsl").into()),
         });
-        let mesh_pipeline = build_pipeline(
-            device,
-            &layout,
-            &mesh_shader,
-            format,
-            depth_format,
-            Some(wgpu::BlendState::ALPHA_BLENDING),
-        );
+        let mesh_pipeline =
+            build_pipeline(device, &layout, &mesh_shader, format, depth_format, None);
         let pick_pipeline = build_pipeline(
             device,
             &layout,
@@ -133,6 +129,7 @@ impl SceneRenderer {
             pick_pipeline,
             meshes: Vec::new(),
             origin: [0.0; 3],
+            origin_set: false,
             selected: None,
         }
     }
@@ -142,30 +139,51 @@ impl SceneRenderer {
         self.origin
     }
 
-    /// Carica le mesh; riusa i buffer GPU delle mesh invariate (stesso `ElementId` e stessi dati).
-    /// Se l'origine locale cambia, tutte le mesh vengono ricaricate.
-    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, meshes: &[Mesh]) {
-        let origin = origin_for(meshes);
-        let mut old: Vec<Option<GpuMesh>> = if origin == self.origin {
-            std::mem::take(&mut self.meshes)
-                .into_iter()
-                .map(Some)
-                .collect()
-        } else {
-            Vec::new()
-        };
+    /// Carica le mesh in modo incrementale: riusa i buffer GPU degli elementi con lo stesso
+    /// `ElementId` e lo stesso hash di contenuto. L'origine locale si fissa al primo upload non
+    /// vuoto e cambia (con ricaricamento completo) solo se il centro bbox si sposta oltre
+    /// [`upload::REORIGIN_THRESHOLD_MM`].
+    pub fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        meshes: &[Mesh],
+    ) -> UploadStats {
+        let has_geometry = meshes.iter().any(|m| !m.positions.is_empty());
+        let center = has_geometry.then(|| origin_for(meshes));
+        let (origin, reorigin) =
+            upload::next_origin(self.origin_set.then_some(self.origin), center);
         self.origin = origin;
+        self.origin_set |= has_geometry;
+
+        let mut current: HashMap<ElementId, GpuMesh> = std::mem::take(&mut self.meshes)
+            .into_iter()
+            .map(|g| (g.element, g))
+            .collect();
+        let hashes: HashMap<ElementId, u64> = current.iter().map(|(id, g)| (*id, g.hash)).collect();
+        let new: Vec<(ElementId, u64)> = meshes
+            .iter()
+            .map(|m| (m.element, upload::content_hash(m)))
+            .collect();
+        let mut stats = upload::plan_upload(&hashes, &new).stats();
+        if reorigin {
+            // Nuova origine: i vertici locali cambiano, si ricarica tutto.
+            current.clear();
+            stats.uploaded += stats.reused;
+            stats.reused = 0;
+        }
+
         let layout = &self.instance_layout;
         self.meshes = meshes
             .iter()
-            .map(|m| {
-                old.iter_mut()
-                    .find(|g| g.as_ref().is_some_and(|g| g.source == *m))
-                    .and_then(Option::take)
-                    .unwrap_or_else(|| GpuMesh::new(device, layout, m, origin))
+            .zip(&new)
+            .map(|(m, (id, hash))| match current.remove(id) {
+                Some(g) if g.hash == *hash => g,
+                _ => GpuMesh::new(device, layout, m, origin),
             })
             .collect();
         self.write_instances(queue);
+        stats
     }
 
     /// Imposta l'elemento selezionato (evidenziato con [`SELECTED_COLOR`]).
@@ -176,7 +194,7 @@ impl SceneRenderer {
 
     fn write_instances(&self, queue: &wgpu::Queue) {
         for (i, g) in self.meshes.iter().enumerate() {
-            let id = g.source.element;
+            let id = g.element;
             let color = if Some(id) == self.selected {
                 SELECTED_COLOR
             } else {
@@ -255,7 +273,7 @@ impl SceneRenderer {
         let value = read_pixels(device, queue, encoder, &color, [x, y], [1, 1], 4);
         let raw = u32::from_le_bytes(value.get(0..4)?.try_into().ok()?);
         let index = decode_pick_id(raw)?;
-        self.meshes.get(index as usize).map(|g| g.source.element)
+        self.meshes.get(index as usize).map(|g| g.element)
     }
 
     /// Render offscreen su una texture RGBA8 (con depth); restituisce i pixel RGBA.
@@ -268,7 +286,7 @@ impl SceneRenderer {
         size: [u32; 2],
     ) -> Vec<u8> {
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut r = Self::with_depth(device, format, Some(OFFSCREEN_DEPTH_FORMAT));
+        let mut r = Self::new(device, format, Some(OFFSCREEN_DEPTH_FORMAT));
         r.upload(device, queue, meshes);
         r.prepare(queue, camera, size[0] as f32 / size[1] as f32);
         let color = offscreen_texture(device, size, format, "waku offscreen");
