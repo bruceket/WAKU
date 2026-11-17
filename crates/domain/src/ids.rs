@@ -32,7 +32,21 @@ pub enum GuidError {
 
 /// GUID IFC: UUID a 128 bit codificato in 22 caratteri.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct IfcGuid(String);
+
+impl TryFrom<String> for IfcGuid {
+    type Error = GuidError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        IfcGuid::parse(&s)
+    }
+}
+
+impl From<IfcGuid> for String {
+    fn from(g: IfcGuid) -> String {
+        g.0
+    }
+}
 
 impl IfcGuid {
     /// Nuovo GUID casuale (UUID v4).
@@ -123,6 +137,13 @@ mod tests {
         assert!(IfcGuid::parse("0000000000000000000000x ").is_err());
         assert!(IfcGuid::parse("4000000000000000000000").is_err()); // overflow 128 bit
         assert!(IfcGuid::parse("00000000000000000000!0").is_err());
+    }
+    #[test]
+    fn guid_deserialize_rejects_invalid() {
+        assert!(serde_json::from_str::<IfcGuid>("\"abc\"").is_err());
+        let g = IfcGuid::new();
+        let j = serde_json::to_string(&g).unwrap();
+        assert_eq!(serde_json::from_str::<IfcGuid>(&j).unwrap(), g);
     }
     #[test]
     fn element_id_ord() {
