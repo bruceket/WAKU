@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/cli", "apps/mcp", "crates/commands", "crates/domain", "crates/geometry", "crates/mcp", "crates/ifc", "crates/persistence", "crates/render", "xtask"]
+members = ["apps/cli", "apps/desktop", "apps/mcp", "crates/commands", "crates/domain", "crates/geometry", "crates/mcp", "crates/ifc", "crates/persistence", "crates/render", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -25,6 +25,7 @@ assert_cmd = "=2.2.2"
 predicates = "=3.1.4"
 egui = { version = "=0.37.0", default-features = false }
 egui-wgpu = { version = "=0.37.0" }
+eframe = { version = "=0.37.0", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
 bytemuck = { version = "=1.25.0", features = ["derive"] }
 pollster = "=0.4.0"
 tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }

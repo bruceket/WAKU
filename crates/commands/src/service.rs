@@ -257,9 +257,17 @@ fn apply(m: &mut Model, a: &Action, created: &mut Vec<ElementId>) -> Result<(), 
 #[derive(Clone, Debug)]
 pub enum Request {
     Execute(Command),
-    Undo { expected: Revision, origin: Origin },
-    Redo { expected: Revision, origin: Origin },
+    Undo {
+        expected: Revision,
+        origin: Origin,
+    },
+    Redo {
+        expected: Revision,
+        origin: Origin,
+    },
     Snapshot,
+    /// Copia del journal delle revisioni committate (con origine).
+    Journal,
 }
 
 /// Risposta del thread writer.
@@ -267,6 +275,7 @@ pub enum Request {
 pub enum Response {
     Done(Result<Outcome, CommandError>),
     Snapshot(Snapshot),
+    Journal(Vec<JournalEntry>),
 }
 
 enum Msg {
@@ -318,6 +327,7 @@ pub fn spawn_writer(mut svc: CommandService) -> WriterHandle {
                             Response::Done(svc.redo(expected, origin))
                         }
                         Request::Snapshot => Response::Snapshot(svc.snapshot()),
+                        Request::Journal => Response::Journal(svc.journal().to_vec()),
                     };
                     if svc.revision() != before {
                         let snap = svc.snapshot();
@@ -700,6 +710,29 @@ mod tests {
         assert_eq!(s.revision, Revision(800));
         for n in 1..=800u64 {
             assert_eq!(sub.recv().unwrap().revision, Revision(n));
+        }
+    }
+
+    #[test]
+    fn writer_journal_request_reports_origins() {
+        let (m, ids) = sample_room();
+        let h = spawn_writer(CommandService::new(m));
+        let mut c = cmd("j1", 0, vec![Action::DeleteOpening { id: ids.door }]);
+        c.origin = Origin::Ai;
+        h.send(Request::Execute(c)).recv().unwrap();
+        h.send(Request::Undo {
+            expected: Revision(1),
+            origin: Origin::Gui,
+        })
+        .recv()
+        .unwrap();
+        match h.send(Request::Journal).recv().unwrap() {
+            Response::Journal(j) => {
+                assert_eq!(j.len(), 2);
+                assert_eq!(j[0].origin, Origin::Ai);
+                assert_eq!(j[1].origin, Origin::Gui);
+            }
+            other => panic!("risposta inattesa: {other:?}"),
         }
     }
 }

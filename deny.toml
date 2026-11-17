@@ -25,3 +25,21 @@ deny = [
     { name = "rhai" },
     { name = "wry" },
 ]
+
+# Eccezioni motivate (REQ-LIC-02). Elenco font e licenze: docs/third-party-assets.md.
+# epaint_default_fonts: font predefiniti di egui incorporati nel binario
+# (Ubuntu-Light: Ubuntu Font Licence 1.0; NotoEmoji-Regular: OFL-1.1). Sono asset
+# font, non codice; entrambe le licenze consentono redistribuzione incorporata.
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]
+
+# Avvisi "unmaintained" (non vulnerabilita') su crate del solo backend Linux di
+# accesskit (accesskit_unix -> zbus/zvariant, AT-SPI). Non compilati per il
+# target distribuito x86_64-pc-windows-msvc. Da rivalutare con il supporto Linux.
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: solo accesskit_unix (Linux), non nel target Windows" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: solo accesskit_unix (Linux), non nel target Windows" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: solo accesskit_unix (Linux), non nel target Windows" },
+]

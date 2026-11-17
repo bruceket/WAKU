@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 136 32" width="136" height="32" role="img" aria-label="waku">
+  <title>waku</title>
+  <!-- Simbolo: volume architettonico a 4 facce (box 32x32). -->
+  <polygon points="4,12 16,6 16,18" fill="#CC633D"/>
+  <polygon points="4,12 16,18 16,30 4,24" fill="#AD492B"/>
+  <polygon points="16,18 28,12 28,24 16,30" fill="#BE5532"/>
+  <polygon points="16,6 28,12 16,18" fill="#C65A34"/>
+  <!-- Logotipo minuscolo arrotondato. -->
+  <text x="38" y="24" fill="#302720" stroke="#302720" stroke-width="0.6" stroke-linejoin="round" font-family="'Nunito', 'Varela Round', 'Arial Rounded MT Bold', sans-serif" font-size="24" font-weight="700" letter-spacing="0.5">waku</text>
+</svg>
