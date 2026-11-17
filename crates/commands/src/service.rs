@@ -1,12 +1,17 @@
 //! Servizio transazionale: clone del modello, applicazione, validazione, commit.
 
 use crate::{Action, Command, CommandError, JournalEntry, Origin, Outcome, RequestId, Revision};
-use domain::{ElementId, IfcGuid, Length, Model, Opening, OpeningKind, Point2, Wall, WallLocation};
+use domain::{
+    ElementId, IfcGuid, Length, Model, Opening, OpeningKind, Point2, Space, Wall, WallLocation,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::SystemTime;
+
+/// Tolleranza di fusione degli estremi dei muri nel rilevamento vani (mm).
+const SPACE_TOL_MM: f64 = 1.0;
 
 /// Vista immutabile del modello a una data revisione.
 #[derive(Clone, Debug)]
@@ -215,6 +220,27 @@ fn apply(m: &mut Model, a: &Action, created: &mut Vec<ElementId>) -> Result<(), 
                 },
             );
             created.push(id);
+        }
+        Action::DetectSpaces { level } => {
+            if !m.levels.contains_key(level) {
+                return Err(CommandError::NotFound(*level));
+            }
+            let cycles = geometry::detect_spaces(m, *level, SPACE_TOL_MM)
+                .map_err(|e| CommandError::Geometry(e.to_string()))?;
+            m.spaces.retain(|_, s| s.level != *level);
+            for (i, boundary) in cycles.into_iter().enumerate() {
+                let id = m.alloc_id();
+                m.spaces.insert(
+                    id,
+                    Space {
+                        guid: IfcGuid::new(),
+                        level: *level,
+                        boundary,
+                        name: format!("Vano {}", i + 1),
+                    },
+                );
+                created.push(id);
+            }
         }
         Action::DeleteOpening { id } => {
             m.openings.remove(id).ok_or(CommandError::NotFound(*id))?;
@@ -540,6 +566,44 @@ mod tests {
             svc.redo(Revision(3), Origin::Gui).unwrap_err(),
             CommandError::NothingToRedo
         );
+    }
+
+    #[test]
+    fn detect_spaces_action_creates_space() {
+        let (m, ids) = sample_room();
+        let mut svc = CommandService::new(m);
+        let a = Action::DetectSpaces { level: ids.level };
+        let o = svc.execute(cmd("s1", 0, vec![a.clone()])).unwrap();
+        assert_eq!(o.created.len(), 1);
+        let snap = svc.snapshot();
+        let s = &snap.model.spaces[&o.created[0]];
+        assert_eq!(s.name, "Vano 1");
+        assert_eq!(s.level, ids.level);
+        assert_eq!(s.boundary.len(), 4);
+        // Rieseguire sostituisce, non duplica.
+        let o2 = svc.execute(cmd("s2", 1, vec![a])).unwrap();
+        let snap = svc.snapshot();
+        assert_eq!(snap.model.spaces.len(), 1);
+        assert!(snap.model.spaces.contains_key(&o2.created[0]));
+    }
+
+    #[test]
+    fn detect_spaces_open_contour_leaves_model() {
+        let (m, ids) = sample_room();
+        let mut svc = CommandService::new(m.clone());
+        let e = svc
+            .execute(cmd(
+                "o",
+                0,
+                vec![
+                    Action::DeleteWall { id: ids.walls[2] },
+                    Action::DetectSpaces { level: ids.level },
+                ],
+            ))
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Geometry(_)));
+        assert_eq!(*svc.snapshot().model, m);
+        assert_eq!(svc.revision(), Revision(0));
     }
 
     #[test]

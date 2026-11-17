@@ -46,6 +46,10 @@ pub enum Action {
         width_mm: f64,
         height_mm: f64,
     },
+    /// Sostituisce i vani del livello con quelli rilevati dal grafo dei muri.
+    DetectSpaces {
+        level: ElementId,
+    },
     DeleteOpening {
         id: ElementId,
     },
@@ -60,6 +64,7 @@ impl Action {
             Action::DeleteWall { .. } => "DeleteWall",
             Action::AddDoor { .. } => "AddDoor",
             Action::DeleteOpening { .. } => "DeleteOpening",
+            Action::DetectSpaces { .. } => "DetectSpaces",
         }
     }
 }
@@ -97,6 +102,8 @@ pub enum CommandError {
     NothingToUndo,
     #[error("niente da ripristinare")]
     NothingToRedo,
+    #[error("geometria: {0}")]
+    Geometry(String),
     #[error("operazione non consentita")]
     Forbidden,
 }

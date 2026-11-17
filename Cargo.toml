@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/commands", "crates/domain", "xtask"]
+members = ["crates/commands", "crates/domain", "crates/geometry", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -16,3 +16,4 @@ thiserror = "=2.0.21"
 uuid = { version = "=1.29.3", features = ["v4"] }
 proptest = "=1.12.0"
 nalgebra = { version = "=0.35.0", features = ["serde-serialize"] }
+petgraph = { version = "=0.8.3", default-features = false, features = ["std"] }
