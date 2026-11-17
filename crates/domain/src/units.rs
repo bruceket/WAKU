@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Unità di lunghezza supportate.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LengthUnit {
     Mm,
     Cm,
