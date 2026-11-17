@@ -18,8 +18,8 @@ use gpu_mesh::{GpuMesh, InstanceUniform, Vertex};
 use std::collections::HashMap;
 pub use upload::{UploadPlan, UploadStats, plan_upload};
 
-/// Colore di evidenziazione dell'elemento selezionato (accent #ED6B3B).
-pub const SELECTED_COLOR: [f32; 4] = [0.929, 0.420, 0.231, 1.0];
+/// Colore di evidenziazione dell'elemento selezionato (primario ufficiale #BE5532).
+pub const SELECTED_COLOR: [f32; 4] = [0.745, 0.333, 0.196, 1.0];
 
 /// Formato depth usato dai pass offscreen (picking e render headless).
 const OFFSCREEN_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;

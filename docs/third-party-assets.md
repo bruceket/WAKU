@@ -19,5 +19,5 @@ licenze sono distribuiti nel crate (`fonts/OFL.txt`, `fonts/UFL.txt`,
 `fonts/Hack-Regular.txt`, `fonts/emoji-icon-font-mit-license.txt`) e vanno inclusi
 nel pacchetto di distribuzione.
 
-Logo Waku (`assets/logo-light.svg`, `assets/logo-dark.svg`): originale, Apache-2.0,
-vedi `assets/PROVENANCE.md`.
+Logo e icona Waku (`assets/logo-light.svg`, `assets/logo-dark.svg`, `assets/app-icon.svg`): forniti dall'owner, licenza da confermare;
+vedi `assets/PROVENANCE.md` e `docs/brand.md`.

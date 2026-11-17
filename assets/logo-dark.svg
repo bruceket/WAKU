@@ -1,10 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 136 32" width="136" height="32" role="img" aria-label="waku">
-  <title>waku</title>
-  <!-- Simbolo: volume architettonico a 4 facce (box 32x32). -->
-  <polygon points="4,12 16,6 16,18" fill="#E0754D"/>
-  <polygon points="4,12 16,18 16,30 4,24" fill="#C25B3A"/>
-  <polygon points="16,18 28,12 28,24 16,30" fill="#D2663F"/>
-  <polygon points="16,6 28,12 16,18" fill="#D96C45"/>
-  <!-- Logotipo minuscolo arrotondato. -->
-  <text x="38" y="24" fill="#F3EBE3" stroke="#F3EBE3" stroke-width="0.6" stroke-linejoin="round" font-family="'Nunito', 'Varela Round', 'Arial Rounded MT Bold', sans-serif" font-size="24" font-weight="700" letter-spacing="0.5">waku</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="803" height="240" viewBox="0 0 803 240" fill="none">
+  <title>Waku — logo (tema scuro, derivato, da confermare)</title>
+  <!-- Derivato da logo-light.svg: stesso simbolo, wordmark #E0754D; sfondo previsto #1C1714. -->
+  <rect x="40" y="40" width="160" height="160" rx="36" fill="#BE5532"/>
+  <g transform="translate(120 120) scale(0.5) translate(-147 -120)"><path fill="#FAF7F2" d="M35 40 L90 72 V202 L35 170 Z"/><path fill="#FAF7F2" fill-opacity="0.55" d="M90 119 L146 80 V163 L90 202 Z"/><path fill="#FAF7F2" fill-opacity="0.8" d="M146 80 L203 119 V202 L146 163 Z"/><path fill="#FAF7F2" fill-opacity="0.92" d="M203 72 L259 37 V167 L203 202 Z"/></g>
+  <g transform="matrix(1.1429 0 0 1.1429 -93.14 -28.57)" fill="none" stroke="#E0754D" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"><path d="M300 112 L330 188 L360 112 L390 188 L420 112"/><circle cx="486.5" cy="150" r="38"/><path d="M524.5 112 V188"/><path d="M577.2 72 V188 M627.2 114 L577.2 152 L629.2 188"/><path d="M661.4 112 V150 A38 38 0 0 0 737.4 150 M737.4 112 V188"/></g>
 </svg>

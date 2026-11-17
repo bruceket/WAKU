@@ -1,1 +1,2 @@
 *.ifc text eol=lf
+assets/*.svg -text

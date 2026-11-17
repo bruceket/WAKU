@@ -415,7 +415,7 @@ impl WakuApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let dark = ui.visuals().dark_mode;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 28.0), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(130.0, 28.0), egui::Sense::hover());
             theme::paint_logo(ui.painter(), rect.min, 28.0, dark);
             ui.separator();
             for (t, label, key) in [
