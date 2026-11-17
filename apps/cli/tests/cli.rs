@@ -133,3 +133,29 @@ fn apply_domain_error_exit_1_file_untouched() {
     cli().arg("apply").arg(&w).arg(&j).assert().code(1);
     assert_eq!(std::fs::read(&w).unwrap(), before);
 }
+
+#[test]
+fn new_and_sample_refuse_overwrite_without_force() {
+    let d = Tmp::new("force");
+    let w = d.f("a.waku");
+    cli().arg("sample").arg(&w).assert().success();
+    let before = std::fs::read(&w).unwrap();
+    for sub in ["new", "sample"] {
+        cli()
+            .arg(sub)
+            .arg(&w)
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("esiste gia'"));
+        assert_eq!(std::fs::read(&w).unwrap(), before);
+    }
+    cli().arg("new").arg(&w).arg("--force").assert().success();
+    assert_eq!(info(&w)["walls"], 0);
+    cli()
+        .arg("sample")
+        .arg(&w)
+        .arg("--force")
+        .assert()
+        .success();
+    assert_eq!(info(&w)["walls"], 4);
+}

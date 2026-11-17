@@ -28,9 +28,17 @@ enum Cmd {
         /// Unita' di lunghezza: mm, cm, m
         #[arg(long, default_value = "mm")]
         unit: String,
+        /// Sovrascrive un file esistente
+        #[arg(long)]
+        force: bool,
     },
     /// Crea il progetto di esempio (stanza 4x3 m con porta e vano)
-    Sample { file: PathBuf },
+    Sample {
+        file: PathBuf,
+        /// Sovrascrive un file esistente
+        #[arg(long)]
+        force: bool,
+    },
     /// Applica un file JSON di azioni (Vec<Action>) come singola transazione
     Apply { file: PathBuf, actions: PathBuf },
     /// Esporta in IFC4
@@ -69,7 +77,8 @@ fn command(expected: Revision, actions: Vec<Action>) -> Command {
 
 fn run(cli: Cli) -> Result<(), Fail> {
     match cli.cmd {
-        Cmd::New { file, unit } => {
+        Cmd::New { file, unit, force } => {
+            refuse_overwrite(&file, force)?;
             let u = LengthUnit::from_suffix(&unit)
                 .ok_or_else(|| Fail::Input(format!("unita' non valida: {unit} (mm, cm, m)")))?;
             let name = file.file_stem().map_or_else(
@@ -78,7 +87,8 @@ fn run(cli: Cli) -> Result<(), Fail> {
             );
             save_locked(&file, &Model::new(&name, u))
         }
-        Cmd::Sample { file } => {
+        Cmd::Sample { file, force } => {
+            refuse_overwrite(&file, force)?;
             let mut svc = CommandService::new(Model::new("Stanza di esempio", LengthUnit::Mm));
             let level = *svc
                 .snapshot()
@@ -162,6 +172,16 @@ fn run(cli: Cli) -> Result<(), Fail> {
             Ok(())
         }
     }
+}
+
+fn refuse_overwrite(file: &Path, force: bool) -> Result<(), Fail> {
+    if !force && file.exists() {
+        return Err(Fail::Input(format!(
+            "il file {} esiste gia': usa --force per sovrascriverlo",
+            file.display()
+        )));
+    }
+    Ok(())
 }
 
 fn save_locked(file: &Path, model: &Model) -> Result<(), Fail> {
