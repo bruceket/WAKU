@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/cli", "crates/commands", "crates/domain", "crates/geometry", "crates/ifc", "crates/persistence", "crates/render", "xtask"]
+members = ["apps/cli", "crates/commands", "crates/domain", "crates/geometry", "crates/mcp", "crates/ifc", "crates/persistence", "crates/render", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -27,3 +27,7 @@ egui = { version = "=0.37.0", default-features = false }
 egui-wgpu = { version = "=0.37.0" }
 bytemuck = { version = "=1.25.0", features = ["derive"] }
 pollster = "=0.4.0"
+tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+sha2 = "=0.10.9"
+getrandom = "=0.4.3"
