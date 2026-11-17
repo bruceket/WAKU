@@ -159,3 +159,33 @@ fn new_and_sample_refuse_overwrite_without_force() {
         .success();
     assert_eq!(info(&w)["walls"], 4);
 }
+
+#[test]
+fn detect_spaces_again_keeps_ifcspace_globalid() {
+    let d = Tmp::new("spaceguid");
+    let (w, a, o1, o2) = (d.f("a.waku"), d.f("a.json"), d.f("1.ifc"), d.f("2.ifc"));
+    cli().arg("sample").arg(&w).assert().success();
+    let model = persistence::load(&w).unwrap();
+    let level = *model.levels.keys().next().unwrap();
+    let acts = serde_json::json!([{"op": "DetectSpaces", "level": level}]);
+    std::fs::write(&a, acts.to_string()).unwrap();
+    let space_line = |p: &PathBuf| {
+        cli().arg("export-ifc").arg(&w).arg(p).assert().success();
+        std::fs::read_to_string(p)
+            .unwrap()
+            .lines()
+            .find(|l| l.contains("IFCSPACE("))
+            .unwrap()
+            .split("IFCSPACE(")
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    let g1 = space_line(&o1);
+    cli().arg("apply").arg(&w).arg(&a).assert().success();
+    let g2 = space_line(&o2);
+    assert_eq!(g1, g2);
+}

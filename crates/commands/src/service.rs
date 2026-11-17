@@ -250,16 +250,37 @@ fn apply(m: &mut Model, a: &Action, created: &mut Vec<ElementId>) -> Result<(), 
             }
             let cycles = geometry::detect_spaces(m, *level, SPACE_TOL_MM)
                 .map_err(|e| CommandError::Geometry(e.to_string()))?;
-            m.spaces.retain(|_, s| s.level != *level);
+            // Vani esistenti indicizzati per insieme di muri di contorno (ordine
+            // ininfluente): un vano rilevato di nuovo mantiene id, GUID e nome.
+            let key = |b: &[ElementId]| {
+                let mut k = b.to_vec();
+                k.sort();
+                k
+            };
+            let mut old: HashMap<Vec<ElementId>, (ElementId, Space)> = HashMap::new();
+            let ids: Vec<ElementId> = m
+                .spaces
+                .iter()
+                .filter(|(_, s)| s.level == *level)
+                .map(|(k, _)| *k)
+                .collect();
+            for k in ids {
+                if let Some(s) = m.spaces.remove(&k) {
+                    old.insert(key(&s.boundary), (k, s));
+                }
+            }
             for (i, boundary) in cycles.into_iter().enumerate() {
-                let id = m.alloc_id();
+                let (id, guid, name) = match old.remove(&key(&boundary)) {
+                    Some((k, s)) => (k, s.guid, s.name),
+                    None => (m.alloc_id(), IfcGuid::new(), format!("Vano {}", i + 1)),
+                };
                 m.spaces.insert(
                     id,
                     Space {
-                        guid: IfcGuid::new(),
+                        guid,
                         level: *level,
                         boundary,
-                        name: format!("Vano {}", i + 1),
+                        name,
                     },
                 );
                 created.push(id);
@@ -465,6 +486,32 @@ mod tests {
         assert_eq!(e, CommandError::RequestIdReused(RequestId("same".into())));
         assert_eq!(svc.revision(), Revision(1));
         assert_eq!(svc.snapshot().model.walls.len(), 5);
+    }
+
+    #[test]
+    fn detect_spaces_twice_keeps_space_guid() {
+        let (m, ids) = sample_room();
+        let mut svc = CommandService::new(m);
+        let det = |id: &str, rev| cmd(id, rev, vec![Action::DetectSpaces { level: ids.level }]);
+        svc.execute(det("d1", 0)).unwrap();
+        let first: Vec<_> = svc
+            .snapshot()
+            .model
+            .spaces
+            .iter()
+            .map(|(k, s)| (*k, s.guid.clone()))
+            .collect();
+        assert_eq!(first.len(), 1);
+        svc.execute(det("d2", 1)).unwrap();
+        let second: Vec<_> = svc
+            .snapshot()
+            .model
+            .spaces
+            .iter()
+            .map(|(k, s)| (*k, s.guid.clone()))
+            .collect();
+        assert_eq!(first, second);
+        assert_eq!(svc.snapshot().model.validate(), Ok(()));
     }
 
     #[test]
