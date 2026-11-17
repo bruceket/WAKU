@@ -10,8 +10,8 @@ e' dichiarato esplicitamente nelle sezioni "Punti aperti".
 |---|---|---|---|
 | AC-01 | Espressioni dimensionali con unita' di progetto (332-60 cm = 272 cm) | Superato | `expr::tests::ac01_subtraction_cm` (crate `domain`); `app::tests::length_field_ac01` (desktop, campo lunghezza) |
 | AC-02 | Muro con porta spostato; undo ripristina | Superato | `service::tests::ac02_move_wall_with_door_and_undo` (crate `commands`) |
-| AC-15 | Retry con stesso `request_id` senza duplicati | Superato | `service::tests::ac15_retry_same_request_id_no_duplicate` (`commands`); `bridge_server::tests::ac15_retry_over_bridge_no_duplicate` (`mcp`) |
-| AC-16 | Nessun codice C/C++ applicativo ne' runtime JS/Python/Rhai; licenze ammesse | Superato | `cargo xtask audit` (`audit: ok`), test `audit::tests::*` in `xtask`; `cargo deny check` (`advisories ok, bans ok, licenses ok, sources ok`) |
+| AC-15 | Retry con stesso `request_id` senza duplicati | Superato | `service::tests::ac15_retry_same_request_id_no_duplicate` (`commands`); `bridge_server::tests::ac15_retry_over_bridge_no_duplicate` (`mcp`); stesso `request_id` con azioni diverse rifiutato (`CommandError::RequestIdReused`, codice bridge `invalid`): `service::tests::reused_request_id_with_different_actions_rejected`, `bridge_server::tests::reused_request_id_with_different_actions_invalid` |
+| AC-16 | Nessun codice C/C++ applicativo ne' runtime JS/Python/Rhai; licenze ammesse | Superato per l'audit nativo; `cargo deny check` fallisce su `advisories` per due nuovi avvisi "unmaintained" (vedi gate) | `cargo xtask audit` (`audit: ok`): denylist di runtime, `build.rs` con `cc`/`cmake`/`bindgen`, e ora anche ogni crate con `links` o nome `-sys` non approvato in `docs/native-deps.md` (approvati `windows-sys`, `renderdoc-sys`); test `audit::tests::*` in `xtask` (fixture `meta_links.json`, `meta_sys.json`) |
 | AC-18 | Scrittura AI rifiutata senza concessione dell'utente | Superato | `bridge_server::tests::ac18_write_without_grant_forbidden` (`mcp`); `policy::tests::default_denied_grant_revoke` |
 | AC-20 | Versione di protocollo non supportata gestita in modo esplicito | Superato | `stdio_stateless_unsupported_version_lists_supported`, `stdio_initialize_unsupported_version_negotiates_2025_11_25` (`apps/mcp/tests/stdio_smoke.rs`); `bridge_server::tests::unsupported_protocol_lists_supported` |
 | AC-24 | Logo: solo simbolo sotto 24 px; variante per tema | Superato a livello di logica; resa grafica non verificata a vista (vedi punti aperti) | `app::tests::logo_variant_cases` (desktop) |
@@ -45,6 +45,23 @@ Note sul test:
   senza pulizia" (sotto), non un difetto del test.
 - Il canale (c) gira solo su Windows (`cfg(windows)`), perche' il bridge e' a named pipe.
 
+## Correzioni dalla revisione finale
+
+- Export IFC atomico (CLI e GUI) tramite `persistence::write_atomic_with`: tmp nella stessa
+  directory, flush esplicito, `sync_all`, `rename`. Un export fallito lascia intatto il file
+  precedente e non lascia tmp (`atomic::tests::write_atomic_with_*`).
+- `waku-cli new` e `sample` rifiutano (uscita 1) di sovrascrivere un file esistente senza
+  `--force` (`new_and_sample_refuse_overwrite_without_force`).
+- `request_id` riusato con azioni diverse: rifiutato (impronta FNV-1a di azioni serializzate e
+  flag preview). La mappa degli esiti per `request_id` non e' limitata e cresce per tutta la
+  sessione del servizio (da rivedere in R1).
+- GUID dei vani stabile: `DetectSpaces` riusa id, GUID e nome di un vano con lo stesso insieme di
+  muri di contorno (ordine ininfluente), quindi il `GlobalId` di `IfcSpace` resta uguale tra
+  export successivi (`detect_spaces_twice_keeps_space_guid`,
+  `detect_spaces_again_keeps_ifcspace_globalid`).
+- Audit AC-16 esteso a `links` e `-sys` (vedi tabella).
+- `docs/mcp.md`: la concessione di scrittura vale per generazione del bridge, non per connessione.
+
 ## Esecuzione del gate
 
 Tutti i comandi eseguiti sulla macchina di sviluppo, branch `feat/g0`:
@@ -53,10 +70,10 @@ Tutti i comandi eseguiti sulla macchina di sviluppo, branch `feat/g0`:
 |---|---|
 | `cargo fmt --all --check` | ok |
 | `cargo clippy --workspace --all-targets -- -D warnings` | ok, nessun warning |
-| `cargo test --workspace` | ok: 137 test superati, 0 falliti, 1 ignorato (`render` `tests/gpu.rs`, richiede GPU) |
-| `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok` |
+| `cargo test --workspace` | ok: 154 test superati, 0 falliti, 1 ignorato (`render` `tests/gpu.rs`, richiede GPU) |
+| `cargo deny check` | **fallito**: `advisories FAILED, bans ok, licenses ok, sources ok`. Nuovi avvisi "unmaintained" `RUSTSEC-2026-0542` (`humantime` 2.4.0, dipendenza diretta di `persistence`) e `RUSTSEC-2026-0543` (`chrono` 0.4.45, via `rmcp` e `schemars`); nessun aggiornamento disponibile. Non ignorati in `deny.toml`: decisione da prendere |
 | `cargo xtask audit` | `audit: ok` |
-| `cargo build --release` | ok, `Finished release profile [optimized] target(s) in 3m 15s` |
+| `cargo build --release` | ok, `Finished release profile [optimized] target(s) in 35.41s` (incrementale) |
 
 Nota: `cargo` segnala un avviso non bloccante sul campo `workspace.package.rust-version`
 (`unused_workspace_package_fields`); non e' stato modificato.

@@ -33,7 +33,11 @@ Tool (schema JSON scritti a mano, `additionalProperties: false`):
 - `bim_undo` / `bim_redo` `{expected_revision: integer}` → `{revision, created, preview}`.
 
 Le scritture passano dal bridge, che le registra nel journal con origine `Ai` e le ammette solo se
-l'utente ha concesso l'accesso AI nel desktop.
+l'utente ha concesso l'accesso AI nel desktop. La concessione vale per la *generazione* del bridge
+(una per writer, cioe' per progetto aperto nel desktop; aprire o creare un progetto ne avvia una
+nuova), non per la singola connessione: tutti i client
+connessi a quella generazione la ereditano, e la revoca vale per tutti. Un `request_id` gia'
+committato e riusato con azioni diverse e' rifiutato con codice `invalid`.
 
 ## Errori
 
