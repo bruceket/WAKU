@@ -117,3 +117,43 @@ fn stdio_stateless_2026_07_28() {
     assert!(versions.contains("2026-07-28"), "{r}");
     check_tools_and_summary(&mut p, meta);
 }
+
+const SUPPORTED: [&str; 5] = [
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+    "2026-07-28",
+];
+
+#[test]
+fn stdio_stateless_unsupported_version_lists_supported() {
+    let mut p = Proc::start("badver");
+    let meta = json!({
+        "io.modelcontextprotocol/protocolVersion": "1999-01-01",
+        "io.modelcontextprotocol/clientInfo": {"name":"smoke","version":"0"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    });
+    p.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":meta}}));
+    let r = p.recv(1);
+    let err = &r["error"];
+    assert!(err.is_object(), "{r}");
+    assert_eq!(err["data"]["requested"], "1999-01-01", "{r}");
+    let listed = format!("{} {}", err["message"], err["data"]);
+    for v in SUPPORTED {
+        assert!(listed.contains(v), "manca {v}: {r}");
+    }
+}
+
+#[test]
+fn stdio_initialize_unsupported_version_negotiates_2025_11_25() {
+    let mut p = Proc::start("badinit");
+    p.send(
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"1999-01-01","capabilities":{},
+        "clientInfo":{"name":"smoke","version":"0"}}}),
+    );
+    let r = p.recv(1);
+    // Per la spec MCP `initialize` negozia: il server risponde con una sua versione.
+    assert_eq!(r["result"]["protocolVersion"], "2025-11-25", "{r}");
+}

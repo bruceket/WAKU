@@ -15,6 +15,10 @@ desktop Waku in esecuzione tramite la named pipe del bridge (Task 10).
 - `server/discover` pubblicizza `supportedVersions: ["2024-11-05","2025-03-26","2025-06-18","2025-11-25","2026-07-28"]`.
 - `initialize` con `2026-07-28` (versione senza handshake) ricade su `2025-11-25`
   (`ProtocolVersion::LATEST_WITH_INITIALIZE`); con `2025-11-25` risponde `2025-11-25`.
+- Versione non supportata (AC-20):
+  - richiesta stateless con `_meta` `1999-01-01` → errore JSON-RPC `-32022 "Unsupported protocol version"` con
+    `data: {requested, supported: [tutte le versioni sopra]}` (comportamento nativo rmcp);
+  - `initialize` con `1999-01-01` → negoziazione a `2025-11-25` (ammesso dalla spec per `initialize`).
 - Entrambe le modalita' sono coperte da `apps/mcp/tests/stdio_smoke.rs`.
 
 ## Superficie
@@ -43,6 +47,11 @@ l'utente ha concesso l'accesso AI nel desktop.
 Ogni chiamata apre una connessione nuova al bridge (Hello con token riletto da
 `%LOCALAPPDATA%\Waku\session.token`), invia una richiesta e chiude: il server sopravvive ai
 riavvii del desktop.
+
+## Piattaforme
+
+In G0 il bridge esiste solo su Windows: su Linux/macOS `BridgeClient::connect` restituisce sempre
+`no_session` fino a R5.
 
 ## Uso con Claude Code
 
