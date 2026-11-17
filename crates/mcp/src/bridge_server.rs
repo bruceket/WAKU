@@ -402,6 +402,7 @@ fn map_err(e: CommandError) -> BridgeResponse {
     let code = match e {
         CommandError::Conflict { .. } => "conflict",
         CommandError::Forbidden => "forbidden",
+        CommandError::RequestIdReused(_) => "invalid",
         _ => "invalid",
     };
     BridgeResponse::err(code, e.to_string())
@@ -655,6 +656,29 @@ mod tests {
         let r1 = call(&mut c, wall(&fx, "same", 0, false)).await.unwrap();
         let r2 = call(&mut c, wall(&fx, "same", 0, false)).await.unwrap();
         assert_eq!(r1, r2);
+        let s = call(&mut c, json!({"type":"Summary"})).await.unwrap();
+        assert_eq!(s["body"]["walls"], 5);
+        assert_eq!(s["body"]["revision"], 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reused_request_id_with_different_actions_invalid() {
+        let fx = start("reuse");
+        fx.policy.grant();
+        let mut c = hello(&fx).await;
+        let r1 = call(&mut c, wall(&fx, "dup", 0, false)).await.unwrap();
+        assert_eq!(r1["type"], "Ok", "{r1}");
+        let other = json!({"type":"Envelope","request_id":"dup","expected_revision":1,"preview":false,
+            "actions":[{"op":"DeleteWall","id":r1["body"]["created"][0]}]});
+        let r = call(&mut c, other).await.unwrap();
+        assert_eq!(code(&r), "invalid");
+        assert!(
+            r["body"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("request_id"),
+            "{r}"
+        );
         let s = call(&mut c, json!({"type":"Summary"})).await.unwrap();
         assert_eq!(s["body"]["walls"], 5);
         assert_eq!(s["body"]["revision"], 1);

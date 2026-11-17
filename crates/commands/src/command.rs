@@ -106,6 +106,10 @@ pub enum CommandError {
     Geometry(String),
     #[error("operazione non consentita")]
     Forbidden,
+    #[error(
+        "request_id {0:?} gia' usato con azioni diverse: usa un nuovo request_id per una nuova richiesta"
+    )]
+    RequestIdReused(RequestId),
 }
 
 #[cfg(test)]

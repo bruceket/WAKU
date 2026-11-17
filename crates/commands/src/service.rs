@@ -13,6 +13,17 @@ use std::time::SystemTime;
 /// Tolleranza di fusione degli estremi dei muri nel rilevamento vani (mm).
 const SPACE_TOL_MM: f64 = 1.0;
 
+/// Impronta deterministica (FNV-1a 64) di azioni serializzate + flag preview.
+fn fingerprint(cmd: &Command) -> u64 {
+    let json = serde_json::to_string(&cmd.actions).unwrap_or_default();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in json.bytes().chain([u8::from(cmd.preview)]) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
 /// Vista immutabile del modello a una data revisione.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -27,7 +38,10 @@ pub struct CommandService {
     undo: Vec<Arc<Model>>,
     redo: Vec<Arc<Model>>,
     journal: Vec<JournalEntry>,
-    seen: HashMap<RequestId, Outcome>,
+    /// Esiti committati per `request_id`, con impronta delle azioni.
+    /// Nota (R1): la mappa non e' limitata e cresce per tutta la sessione
+    /// del servizio (una voce per transazione committata).
+    seen: HashMap<RequestId, (u64, Outcome)>,
 }
 
 impl CommandService {
@@ -89,10 +103,14 @@ impl CommandService {
 
     /// Esegue una transazione. Un `request_id` gia' committato restituisce
     /// l'esito memorizzato senza nuova revisione; i fallimenti non sono memorizzati.
+    /// Lo stesso `request_id` con azioni diverse produce [`CommandError::RequestIdReused`].
     pub fn execute(&mut self, cmd: Command) -> Result<Outcome, CommandError> {
         if !cmd.preview
-            && let Some(o) = self.seen.get(&cmd.request_id)
+            && let Some((fp, o)) = self.seen.get(&cmd.request_id)
         {
+            if *fp != fingerprint(&cmd) {
+                return Err(CommandError::RequestIdReused(cmd.request_id));
+            }
             return Ok(o.clone());
         }
         self.check_expected(cmd.expected)?;
@@ -123,7 +141,8 @@ impl CommandService {
             created,
             preview: false,
         };
-        self.seen.insert(cmd.request_id, outcome.clone());
+        let fp = fingerprint(&cmd);
+        self.seen.insert(cmd.request_id, (fp, outcome.clone()));
         Ok(outcome)
     }
 
@@ -432,6 +451,20 @@ mod tests {
         assert_eq!(o1, o2);
         assert_eq!(svc.snapshot().model.walls.len(), 5);
         assert_eq!(svc.revision(), Revision(1));
+    }
+
+    #[test]
+    fn reused_request_id_with_different_actions_rejected() {
+        let (m, ids) = sample_room();
+        let mut svc = CommandService::new(m);
+        svc.execute(cmd("same", 0, vec![wall_action(ids.level, 10.0)]))
+            .unwrap();
+        let e = svc
+            .execute(cmd("same", 1, vec![wall_action(ids.level, 20.0)]))
+            .unwrap_err();
+        assert_eq!(e, CommandError::RequestIdReused(RequestId("same".into())));
+        assert_eq!(svc.revision(), Revision(1));
+        assert_eq!(svc.snapshot().model.walls.len(), 5);
     }
 
     #[test]
